@@ -1290,9 +1290,32 @@ impl HudAtlas {
             {
                 return None;
             }
-            let image = decode(path)
-                .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
-                .ok()?;
+            // A texture the pack cannot decode keeps the default it shadows: the
+            // player skin whose file fails keeps the first-person arm drawable
+            // (#15523), as vanilla draws the default skin there.
+            let (path, image) = match decode(path) {
+                Ok(image) => (path.clone(), image),
+                Err(e) => {
+                    let fallback = default_textures
+                        .as_ref()
+                        .map(|d| d.join(format!("{name}.png")))
+                        .filter(|p| p != path)
+                        .and_then(|p| decode(&p).ok().map(|image| (p, image)));
+                    match fallback {
+                        Some((p, image)) => {
+                            log::warn!(
+                                "GUI texture {}: {e}; used the default's {name}",
+                                path.display()
+                            );
+                            (p, image)
+                        }
+                        None => {
+                            log::warn!("skipped GUI texture {}: {e}", path.display());
+                            return None;
+                        }
+                    }
+                }
+            };
             let mcmeta =
                 horizon_core::prepared_files::read_to_string(&path.with_extension("png.mcmeta"))
                     .ok();
@@ -4164,6 +4187,28 @@ texture=wide",
             assert_eq!(((r.w, r.h), r.texels(size)), (gui, texels), "{name}");
         }
     }
+    /// A texture the pack cannot decode falls back to the default it
+    /// shadows, rather than leaving the sprite out of the atlas (#15523).
+    #[test]
+    fn an_undecodable_pack_texture_keeps_the_default_sprite() {
+        let temp = std::env::temp_dir().join(format!("horizon-broken-skin-{}", std::process::id()));
+        let (defaults, pack) = (temp.join("defaults"), temp.join("pack"));
+        write_png(&defaults, "entity/player/wide/steve", 64, 32);
+        write_png(&pack, "gui/container/inventory", 256, 256);
+        let broken = pack.join("assets/minecraft/textures/entity/player/wide/steve.png");
+        fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        fs::write(
+            &broken,
+            [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00],
+        )
+        .unwrap();
+        let atlas = HudAtlas::build_over(&pack, &defaults).unwrap();
+        let _ = fs::remove_dir_all(&temp);
+        let size = (atlas.width, atlas.height);
+        let r = atlas.sprites["entity/player/wide/steve"];
+        assert_eq!(r.texels(size), (64, 32), "the default skin is used");
+    }
+
     /// A bitmap font's `file` may be any texture, not only one under
     /// `textures/font`; the atlas packs it so the font can read its glyphs
     /// from there instead of copying them into the run-time region.
