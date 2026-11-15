@@ -3645,6 +3645,20 @@ impl Hub {
                 values: vec![(6, serializer::POSE, Value::Id(pose.id()))],
             }));
         }
+        // ServerEntity.sendDirtyEntityData: the skin parts
+        // (Avatar.DATA_PLAYER_MODE_CUSTOMISATION) the player's model shows, which
+        // ServerPlayer.updateOptions copies from the client's information, go to the
+        // player itself too. Its own entity is never tracked to it
+        // (ChunkMap.TrackedEntity.updatePlayer skips the entity itself), so this is
+        // the only way its client learns them and draws its outer layer (#17123).
+        let g = &mut self.guests[i];
+        if g.info.model_customisation != g.sent_skin {
+            g.sent_skin = g.info.model_customisation;
+            g.send(&C::SetEntityData(play::SetEntityData {
+                id: g.entity_id,
+                values: vec![(16, serializer::BYTE, Value::Byte(g.sent_skin as i8))],
+            }));
+        }
         // ServerEntity.sendDirtyEntityData: the parrots on the player's
         // shoulders go to the player too, whose own model draws them.
         let g = &mut self.guests[i];

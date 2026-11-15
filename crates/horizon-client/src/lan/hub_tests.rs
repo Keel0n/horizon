@@ -259,6 +259,45 @@ fn self_pose_wire_lifecycle_preserves_existing_publishers() {
     assert!(drain(&rx).0.is_empty());
 }
 
+/// `ServerEntity.sendDirtyEntityData`'s `sendToTrackingPlayersAndSelf`: a player's
+/// own entity is never paired with it (`ChunkMap.TrackedEntity.updatePlayer` skips
+/// the entity itself), so the skin parts (`Avatar.DATA_PLAYER_MODE_CUSTOMISATION`)
+/// its model shows reach its client as own data alone: once the client's information
+/// names them, then every change (#17123).
+#[test]
+fn a_players_skin_parts_reach_its_own_client() {
+    fn skin(rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -> Vec<Vec<(u8, i32, Value)>> {
+        let mut frames = Vec::new();
+        while let Ok(out) = rx.try_recv() {
+            let crate::lan::Out::Packet(body) = out else {
+                continue;
+            };
+            let mut r = horizon_protocol::buf::Reader::new(&body);
+            let id = r.varint().unwrap();
+            if let C::SetEntityData(p) = C::decode(id, r.rest()).unwrap()
+                && p.values.iter().any(|(i, _, _)| *i == 16)
+            {
+                assert_eq!(p.id, 1, "the player's own entity");
+                frames.push(p.values);
+            }
+        }
+        frames
+    }
+    let (mut hub, rx) = hub_with_a_guest();
+    hub.sync_player_state(0);
+    assert_eq!(
+        skin(&rx),
+        [vec![(16, serializer::BYTE, Value::Byte(0x7F))]],
+        "every layer, the client information's default"
+    );
+    hub.sync_player_state(0);
+    assert!(skin(&rx).is_empty(), "an unchanged mask is not sent again");
+    // CAPE (bit 0) and HAT (bit 6) off, as the client's skin customization screen sends.
+    hub.guests[0].info.model_customisation = 0x7F & !0x41;
+    hub.sync_player_state(0);
+    assert_eq!(skin(&rx), [vec![(16, serializer::BYTE, Value::Byte(0x3E))]]);
+}
+
 #[test]
 fn transient_client_update_fields_reach_all_viewers_once_and_wait_without_viewers() {
     use crate::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
