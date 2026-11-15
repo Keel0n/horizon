@@ -80,10 +80,9 @@ pub(super) struct GuestPlay {
     /// The server tick the digging started (ServerPlayerGameMode.destroyProgressStart).
     dig_start: u64,
     /// The block that clock is for (ServerPlayerGameMode.destroyPos). A START is the only writer
-    /// that names one (death, a new ServerPlayerGameMode, clears it), so a STOP that arrives out
-    /// of reach leaves it: the STOP of a dig resumed on the same block is still measured from the
-    /// first START's ticks (#4124). An abort clears it, as vanilla's abortDestroyBlock does with
-    /// `destroyProgressStart` (#16466).
+    /// that names one (death, a new ServerPlayerGameMode, clears it), so an abort, or a STOP that
+    /// arrives out of reach, leaves it: the STOP of a dig resumed on the same block is still
+    /// measured from the first START's ticks (#4124).
     destroy_pos: Option<[i32; 3]>,
     /// A block the client stopped digging before the server's time was up: it breaks once
     /// its progress since `dig_start` is complete (ServerPlayerGameMode.hasDelayedDestroy).
@@ -268,21 +267,13 @@ impl GuestPlay {
     fn dig_start_for(&self, pos: [i32; 3]) -> Option<u64> {
         (self.destroy_pos == Some(pos)).then_some(self.dig_start)
     }
-    /// A dig that ends without a break, a STOP from out of reach: the guest holds attack no more
-    /// (`digging` is `as_guest`'s left button and `tick_mining`'s `forced_hit`), while the clock
-    /// `destroy_pos` names stays for the STOP that comes when the guest is back in reach (#4124).
+    /// A dig that ends without a break, an abort or a STOP from out of reach: the guest holds
+    /// attack no more (`digging` is `as_guest`'s left button and `tick_mining`'s `forced_hit`),
+    /// while the clock `destroy_pos` names stays for the STOP that comes when the guest is back
+    /// in reach (#4124).
     fn dig_ended(&mut self) {
         self.digging = None;
         self.mining = None;
-    }
-    /// `ServerPlayerGameMode.abortDestroyBlock`: the button is let go, and so is the clock —
-    /// vanilla sets `destroyProgressStart = -1` here, so a START after the player lands does not
-    /// measure from a dig abandoned mid-jump and break the block as if it had been dug the whole
-    /// time (#16466). Only a STOP from out of reach keeps the clock (#4124).
-    fn dig_aborted(&mut self) {
-        self.digging = None;
-        self.mining = None;
-        self.destroy_pos = None;
     }
 }
 
@@ -2225,10 +2216,9 @@ impl Game<'_> {
                 }
                 2 => {
                     host.hub.ack(conn, a.sequence);
-                    // ServerPlayerGameMode.abortDestroyBlock: the button is let go, the dig and
-                    // the crack go, and so does the clock `destroy_pos` named — a fresh START
-                    // after the player lands measures from itself (#16466).
-                    host.play.entry(conn).or_default().dig_aborted();
+                    // ServerPlayerGameMode.abortDestroyBlock clears the dig and the crack; the
+                    // clock `destroy_pos` names is left to the next START (#4124).
+                    host.play.entry(conn).or_default().dig_ended();
                     let state = self.world.block(a.pos[0], a.pos[1], a.pos[2]).0 as i32;
                     host.hub.send_to(
                         conn,
@@ -5787,12 +5777,11 @@ mod tests {
         assert!(!super::captured_block_break(&sound, &broken));
     }
 
-    /// #4124: a STOP is measured from the START that named its block (`destroyPos`) — a STOP from
-    /// out of reach ends the dig the guest's button held but leaves that clock — and breaks the
-    /// block at 70 % of the dig, or the server finishes it alone from the same START. A guest that
-    /// reaches a block only at a jump's apex keeps its dig this way, and no other block or new
-    /// body inherits the clock. An abort (the button let go) is not this case any more: it ends
-    /// the clock too, as vanilla's abortDestroyBlock does (#16466).
+    /// #4124: a STOP is measured from the START that named its block (`destroyPos`) — an abort, or
+    /// a STOP from out of reach, ends the dig the guest's button held but leaves that clock — and
+    /// breaks the block at 70 % of the dig, or the server finishes it alone from the same START.
+    /// A guest that reaches a block only at a jump's apex keeps its dig this way, and no other
+    /// block or new body inherits the clock.
     #[test]
     fn a_stop_after_a_fall_is_measured_from_the_starts_clock() {
         use super::{GuestPlay, Mining, StopDig, stop_dig};
@@ -5828,45 +5817,6 @@ mod tests {
         // A respawn's new ServerPlayerGameMode starts from no clock at all.
         play.destroy_pos = None;
         assert_eq!(stop_dig(&play, pos, false, 1015, 0.05), StopDig::Other);
-    }
-
-    /// #16466: an abort (the attack button let go mid-jump) buries the dig's clock, the way
-    /// vanilla's `ServerPlayerGameMode.abortDestroyBlock` sets `destroyProgressStart = -1` — so
-    /// the next START on the same block after the player lands counts from itself, and the block
-    /// does not break as if it had been dug the whole flight. Only a STOP from out of reach keeps
-    /// the clock (#4124).
-    #[test]
-    fn an_abort_after_a_jump_forgets_the_starts_clock() {
-        use super::{GuestPlay, Mining, StopDig, stop_dig};
-        let pos = [12, 70, -5];
-        let mut play = GuestPlay {
-            digging: Some((pos, [0, 1, 0])),
-            mining: Some(Mining {
-                pos,
-                progress: 0.5,
-                per_tick: 0.0,
-                ticks: 8,
-            }),
-            destroy_pos: Some(pos),
-            dig_start: 1000,
-            ..GuestPlay::default()
-        };
-        // The player lands with the button released mid-flight: the dig and its clock are gone.
-        play.dig_aborted();
-        assert!(play.digging.is_none() && play.mining.is_none());
-        assert!(play.destroy_pos.is_none());
-        // The next START on the same block arrives 2 ticks later: it is measured from itself
-        // (2 ticks of 0.05), not from the abandoned flight's dig (17 ticks).
-        assert_eq!(stop_dig(&play, pos, false, 1017, 0.05), StopDig::Other);
-        // A STOP from out of reach keeps the clock, as #4124 needs.
-        let mut play = GuestPlay {
-            digging: Some((pos, [0, 1, 0])),
-            destroy_pos: Some(pos),
-            dig_start: 1000,
-            ..GuestPlay::default()
-        };
-        play.dig_ended();
-        assert_eq!(stop_dig(&play, pos, false, 1015, 0.05), StopDig::Break);
     }
 
     /// #3684: a player shrunk to `minecraft:scale` 0.1 who stands 0.05 from a
