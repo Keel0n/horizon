@@ -16,8 +16,9 @@ pub(super) enum StopDig {
 }
 
 /// The STOP branch's decision: a STOP is measured from the START that named its block
-/// (`destroyPos`, which an abort or a STOP from out of reach leaves alone), whose ticks times
-/// `getDestroyProgress` decide between the break and the delayed dig (#4124).
+/// (`destroyPos`, which only a STOP from out of reach leaves alone — an abort clears it with the
+/// clock, as vanilla's abortDestroyBlock does), whose ticks times `getDestroyProgress` decide
+/// between the break and the delayed dig (#4124, #16466).
 pub(super) fn stop_dig(
     play: &GuestPlay,
     pos: [i32; 3],
