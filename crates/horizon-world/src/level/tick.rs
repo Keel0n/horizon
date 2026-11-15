@@ -1915,6 +1915,13 @@ impl Behaviours {
         if speed <= 0 {
             return;
         }
+        // `ServerLevel.tick` random-ticks its chunks inside `handlingTick`
+        // (ServerLevel.java:360 sets it, :406 runs `chunkSource.tick`, :412
+        // clears it), so a piston reached by a random tick's neighbour change
+        // reports event 2 for an in-flight push: `PistonBaseBlock.checkIfExtend`
+        // reads `isHandlingTick()` (PistonBaseBlock.java:108).
+        let was_handling_tick = ticks.handling_tick;
+        ticks.handling_tick = true;
         let (min_x, min_z) = (chunk.x * 16, chunk.z * 16);
         horizon_threads::work::set_chunk(chunk.x, chunk.z);
         for _ in 0..speed {
@@ -1955,6 +1962,7 @@ impl Behaviours {
             }
             from = min_y + 16;
         }
+        ticks.handling_tick = was_handling_tick;
     }
     /// Whether a random tick at a block of `state` can do anything: what
     /// [`Self::tick_chunk_random_masked`]'s masks hold. `random_tick_at`

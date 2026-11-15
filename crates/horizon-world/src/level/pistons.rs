@@ -797,6 +797,15 @@ impl Behaviours {
     /// `ServerLevel.runBlockEvents`: run queued block events (piston moves).
     /// Call once per tick after scheduled and random ticks.
     pub fn run_block_events<L: LevelAccess + ?Sized>(&self, level: &mut L, ticks: &mut Ticks) {
+        // `ServerLevel.tick` runs its block events inside `handlingTick`
+        // (ServerLevel.java:360 sets it, :409 runs `runBlockEvents`, :412
+        // clears it), so `PistonBaseBlock.checkIfExtend`'s
+        // `isHandlingTick()` (PistonBaseBlock.java:108) answers true while an
+        // event runs: a piston that loses its signal here, with the block it
+        // pushed still in flight, reports event 2 (`TRIGGER_DROP`) and not the
+        // plain event 1 (`TRIGGER_CONTRACT`).
+        let was_handling_tick = ticks.handling_tick;
+        ticks.handling_tick = true;
         let mut reschedule = Vec::new();
         while let Some(event) = ticks.pop_block_event() {
             if !level.should_tick_blocks_at(event.pos.chunk()) {
@@ -822,6 +831,7 @@ impl Behaviours {
         for event in reschedule {
             ticks.queue_block_event(event);
         }
+        ticks.handling_tick = was_handling_tick;
     }
     /// `Level.tickBlockEntities` for moving pistons (the only block entities
     /// whose ticking changes blocks). Entries added during the pass wait for

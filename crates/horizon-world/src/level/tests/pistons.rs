@@ -464,3 +464,106 @@ fn a_piston_is_powered_by_its_neighbours_except_the_front_and_by_quasi_connectiv
         );
     }
 }
+
+/// `ServerLevel.tick` runs its block events inside `handlingTick`
+/// (ServerLevel.java:360 sets it, :409 runs `runBlockEvents`, :412 clears it),
+/// so `PistonBaseBlock.checkIfExtend`'s `isHandlingTick()`
+/// (PistonBaseBlock.java:108) answers true while an event runs. A piston that
+/// loses its signal inside that pass, with the block it pushed still past
+/// half-way out and not ticked at the current game time, therefore asks for
+/// event 2 (`TRIGGER_DROP`) where a neighbour change outside the pass asks for
+/// event 1 (`TRIGGER_CONTRACT`); `PistonBaseBlock.triggerEvent` (:192-201)
+/// takes a different path for the two.
+///
+/// The second piston stands in a chunk the level holds back, so its event is
+/// rescheduled instead of run and the queue can be read.
+#[test]
+fn a_piston_dropping_its_signal_inside_a_block_event_asks_for_event_two() {
+    struct Held<'a> {
+        inner: &'a mut TestLevel,
+        held: ChunkPos,
+    }
+    impl LevelAccess for Held<'_> {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn should_tick_blocks_at(&self, chunk: ChunkPos) -> bool {
+            chunk != self.held
+        }
+    }
+    let mut w = world!();
+    let piston = w.id("piston", &[("facing", "east")]);
+    let redstone = w.id("redstone_block", &[]);
+    // The piston whose event runs: empty air in front, so its extension only
+    // notifies the neighbours of the arm it places.
+    let mover = BlockPos::new(0, 5, 15);
+    // Beside that arm and in the next chunk: extended, unpowered, and its
+    // pushed block still in flight two ahead.
+    let losing = BlockPos::new(1, 5, 16);
+    let flight = BlockPos::new(3, 5, 16);
+    w.put(
+        losing,
+        w.id("piston", &[("facing", "east"), ("extended", "true")]),
+    );
+    w.put(
+        BlockPos::new(2, 5, 16),
+        w.id(
+            "piston_head",
+            &[("facing", "east"), ("type", "normal"), ("short", "false")],
+        ),
+    );
+    w.put(
+        flight,
+        w.id("moving_piston", &[("facing", "east"), ("type", "normal")]),
+    );
+    w.ticks.moving_pistons.push((
+        flight,
+        MovingPiston {
+            moved_state: w.id("sand", &[]),
+            direction: Direction::East,
+            extending: true,
+            source: false,
+            progress: 0.5,
+            progress_o: 0.5,
+            last_ticked: 0,
+            death_ticks: 0,
+            id: 0,
+        },
+    ));
+    // Ticked in an earlier game time: only `isHandlingTick` can still answer
+    // for the pass about to run.
+    w.level.time = 40;
+    w.set(mover, piston);
+    w.set(BlockPos::new(-1, 5, 15), redstone);
+    let queued: Vec<i32> = w.ticks.block_events.iter().map(|e| e.param_a).collect();
+    assert_eq!(queued, [0], "the powered piston queues its extension");
+    let b = w.b();
+    let mut held = Held {
+        inner: &mut w.level,
+        held: losing.chunk(),
+    };
+    b.run_block_events(&mut held, &mut w.ticks);
+    let events: Vec<(BlockPos, i32)> = w
+        .ticks
+        .block_events
+        .iter()
+        .map(|e| (e.pos, e.param_a))
+        .collect();
+    assert_eq!(
+        events,
+        [(losing, 2)],
+        "the signal that goes during a block event asks for event 2, as vanilla's isHandlingTick makes it"
+    );
+}
