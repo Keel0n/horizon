@@ -73,7 +73,7 @@ impl Scene {
                 usage: wgpu::BufferUsages::STORAGE | blas_input(device),
             },
         );
-        let indices = quad_indices(device, 1);
+        let indices = quad_indices(device, 1).expect("quad indices");
         let size = wgpu::BlasTriangleGeometrySizeDescriptor {
             vertex_format: wgpu::VertexFormat::Float32x3,
             vertex_count: 4,
