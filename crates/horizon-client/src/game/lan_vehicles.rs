@@ -581,6 +581,13 @@ impl Game<'_> {
         g.vehicle_floating =
             wanted.y >= -0.03125 && !rested && !allow_flight && !no_gravity && no_blocks;
         g.vehicle_gravity = gravity;
+        // handleMoveVehicle's `handlePlayerKnownMovement(clientDeltaMovement)`:
+        // a rider sends no position of its own, so the move it gave its vehicle
+        // is the player's known movement (ServerPlayer.getKnownSpeed), which a
+        // spear charge reads as the speed it stabs with. `ClientTickEnd` keeps
+        // it for the tick like any other move.
+        g.known_movement = [target.x - old.x, target.y - old.y, target.z - old.z];
+        g.movement_this_tick = true;
         if let Some(i) = mount {
             let mut m = self.mobs[i].clone();
             let mut events = Vec::new();
@@ -1153,5 +1160,155 @@ mod controller_tests {
             game.mobs[0].fall_distance, 0.0,
             "a move put back keeps the cobweb's reset"
         );
+    }
+
+    /// handleMoveVehicle's `handlePlayerKnownMovement(clientDeltaMovement)`: the
+    /// move a rider gives its horse is that player's known movement
+    /// (`ServerPlayer.getKnownSpeed`), which a spear charge reads as the speed
+    /// it stabs with (`Player.stabAttack`'s `getMotion`): a rider sends no
+    /// position of its own, only the vehicle's. `handleClientTickEnd` keeps it
+    /// for that tick, and zeroes it without a move.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_guests_horse_move_is_its_riders_known_movement() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-horse-move-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap()
+            .0;
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("summon minecraft:horse 4.5 200 4.5 {NoAI:1b,Tame:1b}"));
+        let horse = game.mobs[0].id;
+        game.mobs[0].extra.saddled = true;
+        game.mobs[0].rider = Some(horizon_client::mobs::equine::Rider {
+            client: true,
+            ..Default::default()
+        });
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "horse-move-test".into(), 3)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 3,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut host = game.lan.take().unwrap();
+        let (mut rider, _packets) = guest_with_packets(2, 21);
+        (rider.vehicle, rider.vehicle_order) = (Some(horse), 1);
+        host.hub.guests.push(rider);
+
+        let move_to = |x: f64| play::MoveVehicleRequest {
+            position: [x, 200.0, 4.5],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        game.guest_move_vehicle(&mut host, 2, &move_to(4.9));
+        assert_eq!(game.mobs[0].position.x, 4.9, "the guest moves the horse");
+        let moved = host.hub.guests[0].known_movement;
+        assert!(
+            (moved[0] - 0.4).abs() < 1.0e-9 && moved[1] == 0.0 && moved[2] == 0.0,
+            "the horse's move is its rider's known movement: {moved:?}"
+        );
+        // The horse's own tick kept its position as the last one it had
+        // (`Entity.computeSpeed`'s last known position, which a mob that its
+        // rider's client moves never beats: `travelRidden` only stops it). Its
+        // rider's speed is still the move the client sent, so a spear charge
+        // on horseback carries the horse's speed instead of none.
+        game.mobs[0].previous = game.mobs[0].position;
+        let seen = game.as_guest(&mut host, 2, |g| g.known_player_movement());
+        assert_eq!(
+            seen.map(|m| [m.x, m.y, m.z]),
+            Some(moved),
+            "a spear charge on horseback carries the horse's speed"
+        );
+        // handleClientTickEnd keeps the move of the tick it came in...
+        let expected = [moved, [0.0; 3]];
+        for (round, want) in expected.iter().enumerate() {
+            host.hub.guests[0].inbox.push_back((
+                play::Serverbound::ClientTickEnd(horizon_protocol::packets::Empty),
+                0,
+            ));
+            game.lan = Some(host);
+            game.tick_lan_packets();
+            host = game.lan.take().unwrap();
+            assert_eq!(
+                host.hub.guests[0].known_movement,
+                *want,
+                "{}",
+                if round == 0 {
+                    "the move's own tick keeps it"
+                } else {
+                    "a client tick with no move of either has none"
+                }
+            );
+            // The next client tick: the level pass's packet gate opens again.
+            game.lan = Some(host);
+            game.tick_lan(false);
+            host = game.lan.take().unwrap();
+        }
+        game.lan = Some(host);
     }
 }

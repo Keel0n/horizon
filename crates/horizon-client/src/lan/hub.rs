@@ -3983,10 +3983,12 @@ impl Hub {
                 }
                 S::ClientTickEnd(_) => {
                     // handleClientTickEnd: no move this tick, no known movement.
+                    // A rider's move came with its vehicle's packet, not its own.
                     let g = &mut self.guests[i];
-                    if !g.position_this_tick {
+                    if !g.movement_this_tick {
                         g.known_movement = [0.0; 3];
                     }
+                    g.movement_this_tick = false;
                     g.position_this_tick = false;
                     self.anticheat_tick_end(i, events);
                 }
@@ -4396,6 +4398,7 @@ impl Hub {
         }
         g.moves.push((moved, on_ground));
         g.known_movement = moved;
+        g.movement_this_tick = true;
         g.yaw = yaw;
         g.pitch = pitch.clamp(-90.0, 90.0);
         g.head_yaw = g.yaw;
