@@ -52,10 +52,15 @@ impl Properties {
             if !on {
                 continue;
             }
-            // The preprocessor consumes directive lines inside a continued value, and the lines
-            // of a branch not taken go away with them. `#else` and `#elif` still end the entry:
-            // the branch they start writes the value again.
+            // The preprocessor consumes directive lines inside a continued value, and the lines of
+            // a branch not taken go away with them, so the value goes on with the next name line.
+            // A group opened *inside* the value belongs to it; the `#endif` that closes the branch
+            // the entry started in does not, as it would pull the next line, an entry of its own,
+            // into the value. `#else` and `#elif` end the entry either way: the branch they start
+            // writes the value again.
             let mut logical = line.to_owned();
+            // The groups `#if`/`#ifdef`/`#ifndef` opened since the entry line started.
+            let mut opened = 0u32;
             'continuation: while ends_with_continuation(&logical) {
                 logical.pop();
                 loop {
@@ -66,8 +71,11 @@ impl Properties {
                     if let Some(directive) = next.strip_prefix('#') {
                         if let Some((word, rest)) = split_directive(directive) {
                             out.directive(word, rest, n, &mut conditionals, &mut macros);
-                            if matches!(word, "else" | "elif") {
-                                break 'continuation;
+                            match word {
+                                "if" | "ifdef" | "ifndef" => opened += 1,
+                                "endif" if opened > 0 => opened -= 1,
+                                "endif" | "else" | "elif" => break 'continuation,
+                                _ => {}
                             }
                         }
                         continue;
@@ -237,6 +245,18 @@ mod tests {
         assert!(p.notes.is_empty(), "{:?}", p.notes);
         let p = read("x = a \\\n#ifdef SHADOWS\nb \\\n#endif\nc");
         assert_eq!(p.get("x"), Some("a b c"));
+        assert!(p.notes.is_empty(), "{:?}", p.notes);
+    }
+
+    /// The `#endif` that closes the branch the entry started in ends its value, so the line after
+    /// it is an entry of its own; only a group opened inside the value is consumed by it.
+    #[test]
+    fn continuations_stop_at_the_endif_of_their_own_branch() {
+        let p = read("#define ON\n#ifdef ON\nu = 1 \\\n#endif\nw = 3");
+        assert_eq!(pairs(&p), [("u", "1"), ("w", "3")]);
+        assert!(p.notes.is_empty(), "{:?}", p.notes);
+        let p = read("#define ON\n#ifdef ON\nu = 1 \\\n#ifdef INNER\n#endif\n#endif\nw = 3");
+        assert_eq!(pairs(&p), [("u", "1"), ("w", "3")]);
         assert!(p.notes.is_empty(), "{:?}", p.notes);
     }
 
