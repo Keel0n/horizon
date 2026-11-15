@@ -55,7 +55,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         first.0,
         first.1,
         4,
-        &[source],
+        &[source; 4],
     );
     let second = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
     assert_eq!(second, (first.0, GRAIN), "grew the first page");
@@ -81,20 +81,20 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
             &device,
             &queue,
             arena.sources(third.0).unwrap(),
-            third.1 / 4 * 8,
-            8
+            third.1 * 8,
+            32
         ),
-        bytemuck::bytes_of(&source)
+        bytemuck::bytes_of(&[source; 4])
     );
     assert_eq!(
         read(
             &device,
             &queue,
             arena.sources(first.0).unwrap(),
-            first.1 / 4 * 8,
-            8
+            first.1 * 8,
+            32
         ),
-        [0; 8]
+        [0; 32]
     );
     assert_eq!(
         read(&device, &queue, arena.buffer(third.0), third.1 * 24, 96),
@@ -129,7 +129,7 @@ fn terrain_source_arena_gpu_grow_move_recycle_and_refusal() {
         at.0,
         at.1,
         4,
-        &[source],
+        &[source; 4],
     );
     assert!(
         arena.sources(at.0).is_none(),

@@ -8,7 +8,7 @@ use crate::{
     fast_hash::FxHashMap,
     graphics::GraphicsApi,
     hud::{HudBatch, HudRenderer},
-    mesher::{Part as Quads, SectionMesh, Sides, TerrainVertex, Vertex, packed},
+    mesher::{Part as Quads, SectionMesh, Sides, TerrainSource, TerrainVertex, Vertex, packed},
     section_mask::SectionMask,
     sprites::SpriteAnimation,
 };
@@ -5984,6 +5984,14 @@ impl Renderer {
             id
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        // Sources read by slot (`PULL_FLAT`): a compact range's from its records and their
+        // spills (`SectionMesh::packed_sources`); a wide quad's one source on all four of
+        // its vertex slots, so every slot names its quad's own.
+        let solid_sources = if packed {
+            mesh.packed_sources()
+        } else {
+            mesh.solid_sources.iter().flat_map(|&s| [s; 4]).collect()
+        };
         if solid_slots > 0 {
             self.arena.write_sources(
                 &self.device,
@@ -5992,10 +6000,15 @@ impl Renderer {
                 page,
                 start,
                 solid_slots,
-                if packed { &[] } else { &mesh.solid_sources },
+                &solid_sources,
             );
         }
         if translucent_vertices > 0 {
+            let translucent_sources: Vec<TerrainSource> = mesh
+                .translucent_sources
+                .iter()
+                .flat_map(|&s| [s; 4])
+                .collect();
             self.translucent_arena
                 .as_mut()
                 .unwrap_or(&mut self.arena)
@@ -6006,7 +6019,7 @@ impl Renderer {
                     translucent_at.0,
                     translucent_at.1,
                     translucent_vertices,
-                    &mesh.translucent_sources,
+                    &translucent_sources,
                 );
         }
         let translucent_arena = self.translucent_arena.as_ref().unwrap_or(&self.arena);

@@ -85,7 +85,7 @@ impl FreeList {
 /// One vertex buffer of the arena; only the newest page grows.
 struct Page {
     buffer: wgpu::Buffer,
-    /// Optional shader-pack source records, indexed by the vertex index / 4.
+    /// Optional shader-pack source records, indexed by the vertex (slot).
     sources: Option<wgpu::Buffer>,
     /// Capacity in vertices.
     capacity: u64,
@@ -299,14 +299,19 @@ impl Arena {
         self.pages[page as usize].as_ref()?.sources.as_ref()
     }
 
+    /// A page's sidecar: one `uvec2` per slot (a vertex, or a packed record
+    /// or spill vertex; 8 bytes each), each holding the source of the quad
+    /// the slot belongs to (`write_sources`). A packed record is one slot
+    /// where its quad had four vertices, so the sidecar is sized per slot
+    /// and its entries stay in the range's own span (`copy`, `grow`).
     fn source_buffer(device: &wgpu::Device, capacity: u64) -> Option<wgpu::Buffer> {
-        if capacity / 4 * 8 > device.limits().max_storage_buffer_binding_size {
+        if capacity * 8 > device.limits().max_storage_buffer_binding_size {
             return None;
         }
         try_create(
             device,
             "Terrain quad sources",
-            capacity / 4 * 8,
+            capacity * 8,
             wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -315,7 +320,9 @@ impl Arena {
 
     /// Native meshes allocate no sidecar. Once needed, existing pages also get a zeroed
     /// sidecar so moves can retain sources. Failure leaves geometry intact and attributes
-    /// unknown; a later source upload may retry its page.
+    /// unknown; a later source upload may retry its page. `sources` is one per slot of
+    /// the range (`vertices` of them): a wide quad's four slots all its own, a packed
+    /// record its own slot's, a `FULL` record's four spill slots theirs.
     pub fn write_sources(
         &mut self,
         device: &wgpu::Device,
@@ -337,18 +344,13 @@ impl Arena {
             p.sources = Self::source_buffer(device, p.capacity);
         }
         if let Some(buffer) = &p.sources {
-            let bytes = vertices / 4 * 8;
+            let bytes = vertices * 8;
             if bytes > 0 {
                 // Recycled ranges must never keep another mesh's identity, even for a
                 // missing or incomplete sidecar. Zero records have no valid bit.
-                encoder.clear_buffer(buffer, start / 4 * 8, Some(bytes));
-                if sources.len() as u64 == vertices / 4 {
-                    uploads.buffer(
-                        encoder,
-                        buffer,
-                        start / 4 * 8,
-                        bytemuck::cast_slice(sources),
-                    );
+                encoder.clear_buffer(buffer, start * 8, Some(bytes));
+                if sources.len() as u64 == vertices {
+                    uploads.buffer(encoder, buffer, start * 8, bytemuck::cast_slice(sources));
                 }
             }
         }
@@ -564,17 +566,17 @@ impl Arena {
             vertices * self.stride,
         );
         if let Some(to_sources) = self.sources(to.0) {
-            let bytes = vertices / 4 * 8;
+            let bytes = vertices * 8;
             if bytes > 0 {
                 match self.sources(from.0) {
                     Some(from_sources) => encoder.copy_buffer_to_buffer(
                         from_sources,
-                        from.1 / 4 * 8,
+                        from.1 * 8,
                         to_sources,
-                        to.1 / 4 * 8,
+                        to.1 * 8,
                         bytes,
                     ),
-                    None => encoder.clear_buffer(to_sources, to.1 / 4 * 8, Some(bytes)),
+                    None => encoder.clear_buffer(to_sources, to.1 * 8, Some(bytes)),
                 }
             }
         }

@@ -264,6 +264,39 @@ fn terrain_source_cpu_multipart_and_waterlogged_faces_keep_their_owner() {
     }
 }
 
+/// A compact range's sources are one per slot, where `PULL_FLAT` looks them up:
+/// a record's own slot, and a `FULL` quad's four spill slots (its record's slot
+/// goes unread). Nothing on the padding slots, and none without pack sources.
+#[test]
+fn a_compact_layout_gives_every_slot_its_quads_source() {
+    // Whole faces on the block grid pack; a slab's top stays its four vertices.
+    let face = |y: f32| {
+        [[0.0, y, 0.0], [0.0, y, 1.0], [1.0, y, 1.0], [1.0, y, 0.0]]
+            .map(|pos| TerrainVertex::new(pos, [0.0; 2], 0, 0, 0))
+    };
+    let solid: Vec<TerrainVertex> = [16.0, 16.0, 16.0, 8.5].into_iter().flat_map(face).collect();
+    let sources: Vec<TerrainSource> = (0..4u32)
+        .map(|i| TerrainSource::new(i, [i as i32, 3, 4], i as u8, false))
+        .collect();
+    let mut mesh = SectionMesh {
+        packed: packed::layout(&solid, &[packed::WHITE; 4]),
+        solid,
+        solid_sources: sources.clone(),
+        ..Default::default()
+    };
+    assert_eq!(packed::packed_quads(&mesh.packed, 4), 3);
+    assert_eq!(mesh.packed.len(), 8, "4 records, the slab's 4 vertices");
+    let slots = mesh.packed_sources();
+    assert_eq!(slots.len(), mesh.packed.len());
+    assert_eq!(&slots[..3], &sources[..3]);
+    assert_eq!(slots[3], TerrainSource::default(), "the FULL record's slot");
+    let at = 3 + mesh.packed[3][0] as usize;
+    assert_eq!(at, 4, "the slab's vertices follow the records");
+    assert_eq!(&slots[at..at + 4], &[sources[3]; 4]);
+    mesh.solid_sources.clear();
+    assert!(mesh.packed_sources().is_empty());
+}
+
 #[test]
 fn terrain_source_cpu_partial_metadata_never_inherits_a_previous_face() {
     let mut mesh = SectionMesh::default();

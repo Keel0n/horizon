@@ -597,7 +597,8 @@ uvec2 hz_record_rest(uvec3 hz_lo, uvec3 hz_hi, uint hz_k) {\n    \
 /// UV words (`hz_uv0`..), pulled from the arena page as terrain.wgsl's `vs_section_flat` pulls
 /// them (`CORNER_FN`): a record is read once for all four, and only the vertex's own light and
 /// colour are worked out. `hz_slot`: the slot its block is found by (`hz_block_slots`, 256 a
-/// block). The colour as the vertex fetch converts a Unorm8x4 (terrain.wgsl's `unorm8x4`).
+/// block); `hz_av`: the first slot of its quad's vertices (spilled for a `FULL` record).
+/// The colour as the vertex fetch converts a Unorm8x4 (terrain.wgsl's `unorm8x4`).
 const PULL_FLAT: &str = "    uint hz_qv = uint(gl_VertexIndex);\n    \
     uint hz_own = hz_qv & 3u;\n    \
     uint hz_av = hz_qv & ~3u;\n    \
@@ -736,8 +737,9 @@ impl PackAtlas {
                 "layout(set = 1, binding = 0) readonly buffer HzBlockSlots { uint hz_block_slots[]; };\n\
                  layout(set = 1, binding = 1) readonly buffer HzSlotOrigins { vec4 hz_slot_origins[]; };\n",
             );
-            // Source metadata follows each quad in its arena page. The immutable table
-            // holds sprite rectangles and the current pack's ids of source states.
+            // Source metadata follows each quad in its arena page, one entry per slot
+            // (`Arena::write_sources`). The immutable table holds sprite rectangles and
+            // the current pack's ids of source states.
             declarations.push_str(
                 "layout(set = 3, binding = 0) readonly buffer HzQuadSources { uvec2 hz_sources[]; };\n\
                  layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n\
@@ -810,9 +812,14 @@ impl PackAtlas {
             body.insert_str(0, PULL_FLAT);
             body.push_str(FACE);
             body.push_str(
-                "    uint hz_quad = uint(gl_VertexIndex) / 4u;\n    \
+                // The source lives at the quad's first slot (`write_sources` fills every
+                // slot a quad's vertices or record take): a record's own slot, a `FULL`
+                // record's first spill slot, a wide quad's first vertex. One entry per
+                // slot, not per four vertices, keeps a compact range's entries in its
+                // own span (`Arena::copy`).
+                "    uint hz_source_slot = hz_rec ? hz_slot : hz_av;\n    \
                  uvec2 hz_source = uvec2(0u);\n    \
-                 if (hz_quad < uint(hz_sources.length())) hz_source = hz_sources[hz_quad];\n    \
+                 if (hz_source_slot < uint(hz_sources.length())) hz_source = hz_sources[hz_source_slot];\n    \
                  bool hz_known_source = (hz_source.y & 8192u) != 0u;\n    \
                  int hz_material = -1;\n    \
                  if (hz_known_source && hz_source.x < uint(hz_tables[1])) hz_material = hz_tables[2u + uint(hz_tables[0]) + 2u * hz_source.x + ((hz_source.y >> 12u) & 1u)];\n",

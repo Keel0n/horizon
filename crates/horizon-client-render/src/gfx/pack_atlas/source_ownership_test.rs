@@ -167,12 +167,17 @@ fn terrain_source_ownership_gpu() {
     });
     let slots = storage(bytemuck::cast_slice(&[0u32]));
     let origins = storage(bytemuck::cast_slice(&[[128.0f32, -32.0, -256.0, -1.0]]));
-    let ids = storage(bytemuck::cast_slice(&[
-        crate::mesher::TerrainSource::new(0, [2, 3, 4], 0, false),
-        crate::mesher::TerrainSource::new(1, [6, 3, 4], 13, false),
-        crate::mesher::TerrainSource::new(1, [6, 3, 4], 13, false),
-        crate::mesher::TerrainSource::new(1, [6, 3, 4], 13, true),
-    ]));
+    let ids = storage(bytemuck::cast_slice(
+        &[
+            crate::mesher::TerrainSource::new(0, [2, 3, 4], 0, false),
+            crate::mesher::TerrainSource::new(1, [6, 3, 4], 13, false),
+            crate::mesher::TerrainSource::new(1, [6, 3, 4], 13, false),
+            crate::mesher::TerrainSource::new(1, [6, 3, 4], 13, true),
+        ]
+        .into_iter()
+        .flat_map(|s| [s; 4])
+        .collect::<Vec<_>>(),
+    ));
     let vertex_storage = storage(bytemuck::cast_slice(&vertices));
     let rects = storage(bytemuck::cast_slice(
         &super::super::pack_post::terrain_tables(&[31, -1, 47, 59], &[0, 1]),

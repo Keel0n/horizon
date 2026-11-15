@@ -1,7 +1,7 @@
 //! Original GPU probes of the production terrain inputs, without a resource or shader pack.
 
 use super::PackAtlas;
-use crate::mesher::{TerrainVertex, UV_STEPS};
+use crate::mesher::{TerrainSource, TerrainVertex, UV_STEPS};
 use wgpu::util::DeviceExt;
 
 #[test]
@@ -228,6 +228,7 @@ fn terrain_vertices_go_down_to_the_32768th_below_them() {
                 &queue,
                 &atlas,
                 &vertices,
+                &[],
                 origin,
                 [flat, shadow],
                 "gl_Vertex",
@@ -247,7 +248,9 @@ fn terrain_vertices_go_down_to_the_32768th_below_them() {
 
 /// A shader pack's flat terrain inputs read a compact record (`mesher::packed`) as the four
 /// vertices it holds: a whole tinted face with its own ambient occlusion per corner
-/// (`separateAo`), two more, and a slab's top kept as its vertices (`packed::FULL`).
+/// (`separateAo`), two more, and a slab's top kept as its vertices (`packed::FULL`). Each
+/// quad's source (`mc_Entity`, `at_midBlock`) comes from its own slot: a record's, a `FULL`
+/// quad's spill slots', or a wide quad's vertices'.
 #[test]
 fn compact_records_feed_a_pack_the_vertices_they_hold() {
     use crate::mesher::packed;
@@ -305,6 +308,22 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
         3,
         "whole faces pack, the slab doesn't"
     );
+    // Each quad its own source, as a pack's mesher records them: the first emits
+    // light 14, the third is a fluid. The compact page's are one per slot
+    // (`SectionMesh::packed_sources`), the wide one's one per vertex.
+    let quads = [
+        TerrainSource::new(71, [3, 15, 5], 14, false),
+        TerrainSource::new(72, [5, 15, 5], 0, false),
+        TerrainSource::new(73, [7, 15, 5], 0, true),
+        TerrainSource::new(74, [3, 8, 5], 0, false),
+    ];
+    let mesh = crate::mesher::SectionMesh {
+        solid_sources: quads.to_vec(),
+        packed: records.clone(),
+        ..Default::default()
+    };
+    let compact_sources = mesh.packed_sources();
+    let wide_sources: Vec<TerrainSource> = quads.iter().flat_map(|&s| [s; 4]).collect();
     let page = bytemuck::cast_slice(&records);
     let packed_range = packed::PACKED_BASE..packed::PACKED_BASE + 16;
     let origin = f32::from_bits((1. / UV_STEPS).to_bits());
@@ -320,13 +339,23 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
     ] {
         for shadow in [false, true] {
             let flags = [true, shadow];
-            let wide = sample_probe(&device, &queue, &atlas, &solid, origin, flags, expression);
+            let wide = sample_probe(
+                &device,
+                &queue,
+                &atlas,
+                &solid,
+                &wide_sources,
+                origin,
+                flags,
+                expression,
+            );
             let compact = sample_page(
                 &device,
                 &queue,
                 &atlas,
                 page,
                 packed_range.clone(),
+                &compact_sources,
                 origin,
                 flags,
                 expression,
@@ -345,6 +374,34 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
                     }
                 }
             }
+            // The sources are read, not just equal on both layouts: a record's cell and
+            // emitted light, a `FULL` quad's own from its spill slots, a fluid's flag.
+            if expression == "at_midBlock" {
+                let expected = [
+                    [32.0, -32.0, 32.0, 14.0],
+                    [32.0, -32.0, 32.0, 0.0],
+                    [32.0, -32.0, 32.0, 0.0],
+                    [32.0, 0.0, 32.0, 0.0],
+                ];
+                for (quad, want) in expected.iter().enumerate() {
+                    if compact[4 * quad] != *want {
+                        failures.push(format!(
+                            "at_midBlock quad {quad}: {:?} != {want:?}",
+                            compact[4 * quad]
+                        ));
+                    }
+                }
+            }
+            if expression == "vec4(mc_midTexCoord, mc_Entity.xy)" {
+                for (quad, fluid) in [0.0, 0.0, 1.0, 0.0].iter().enumerate() {
+                    let [_, _, entity, flag] = compact[4 * quad];
+                    if entity != -1.0 || flag != *fluid {
+                        failures.push(format!(
+                            "mc_Entity quad {quad}: [{entity}, {flag}] != [-1, {fluid}]"
+                        ));
+                    }
+                }
+            }
         }
     }
     // A pack's frames keep the translucent quads in the section arena after the solid range: three
@@ -353,9 +410,23 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
     let water: Vec<_> = face(9.0, 15.0).collect();
     let at = page.len() as u32;
     page.extend(water.iter().map(|v| bytemuck::cast::<_, [u32; 6]>(*v)));
+    // Its sources on its own slots, after the three records' and the padding slot.
+    let water_source = TerrainSource::new(75, [9, 14, 5], 0, true);
+    let mut page_sources = vec![TerrainSource::default(); page.len()];
+    page_sources[..3].copy_from_slice(&quads[..3]);
+    page_sources[at as usize..].fill(water_source);
     for expression in ["vec4(gl_Normal, 0.0)", "at_tangent", "at_midBlock"] {
         let flags = [true, false];
-        let wide = sample_probe(&device, &queue, &atlas, &water, origin, flags, expression);
+        let wide = sample_probe(
+            &device,
+            &queue,
+            &atlas,
+            &water,
+            &[water_source; 4],
+            origin,
+            flags,
+            expression,
+        );
         let page = bytemuck::cast_slice(&page);
         let after = sample_page(
             &device,
@@ -363,12 +434,16 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
             &atlas,
             page,
             at..at + 4,
+            &page_sources,
             origin,
             flags,
             expression,
         );
         if wide != after {
             failures.push(format!("water {expression}: {wide:?} != {after:?}"));
+        }
+        if expression == "at_midBlock" && after[0] != [32.0, -32.0, 32.0, 0.0] {
+            failures.push(format!("water at_midBlock: {:?}", after[0]));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -387,28 +462,34 @@ fn sample(
         queue,
         atlas,
         vertices,
+        &[],
         scale,
         flags,
         "vec4(mc_midTexCoord, gl_MultiTexCoord0.xy)",
     )
 }
 
-/// What the pack's vertex stage sets `probe` to (`expression`), for each of `vertices`.
+/// What the pack's vertex stage sets `probe` to (`expression`), for each of `vertices`,
+/// their quads' sources one per vertex (`Arena::write_sources`), empty for none.
 fn sample_probe(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     atlas: &PackAtlas,
     vertices: &[TerrainVertex],
+    sources: &[TerrainSource],
     scale: f32,
     flags: [bool; 2],
     expression: &str,
 ) -> Vec<[f32; 4]> {
     let page = bytemuck::cast_slice(vertices);
     let drawn = 0..vertices.len() as u32;
-    sample_page(device, queue, atlas, page, drawn, scale, flags, expression)
+    sample_page(
+        device, queue, atlas, page, drawn, sources, scale, flags, expression,
+    )
 }
 
-/// `sample_probe` of the vertex indices `drawn` of an arena page holding `page`.
+/// `sample_probe` of the vertex indices `drawn` of an arena page holding `page`, its
+/// quads' sources one per slot (`Arena::write_sources`), empty for none.
 #[allow(clippy::too_many_arguments)]
 fn sample_page(
     device: &wgpu::Device,
@@ -416,6 +497,7 @@ fn sample_page(
     atlas: &PackAtlas,
     page: &[u8],
     drawn: std::ops::Range<u32>,
+    sources: &[TerrainSource],
     scale: f32,
     [flat, shadow]: [bool; 2],
     expression: &str,
@@ -556,7 +638,13 @@ fn sample_page(
         bytemuck::bytes_of(&[0., 0., 0., scale]),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
-    let ids = buffer(bytemuck::bytes_of(&[0u32; 2]), wgpu::BufferUsages::STORAGE);
+    let blank = [TerrainSource::default()];
+    let sources = if sources.is_empty() {
+        &blank[..]
+    } else {
+        sources
+    };
+    let ids = buffer(bytemuck::cast_slice(sources), wgpu::BufferUsages::STORAGE);
     let data = buffer(
         page,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,

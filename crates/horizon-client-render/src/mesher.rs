@@ -515,6 +515,29 @@ impl SectionMesh {
         self.solid_tints.clear();
     }
 
+    /// `packed`'s sources, one per slot of its range (`Arena::write_sources`): a record's
+    /// slot holds its quad's, and so does each of the four vertices a `FULL` quad spilled
+    /// to (`packed::FULL`), whose record's own slot the shader never reads; padding slots
+    /// stay zero. Empty without pack sources or a compact layout, as `packed` is.
+    pub fn packed_sources(&self) -> Vec<TerrainSource> {
+        if self.solid_sources.is_empty() || self.packed.is_empty() {
+            return Vec::new();
+        }
+        let mut slots = vec![TerrainSource::default(); self.packed.len()];
+        for (i, (record, &source)) in self.packed.iter().zip(&self.solid_sources).enumerate() {
+            if record[5] & packed::FULL == 0 {
+                slots[i] = source;
+            } else {
+                // Word 0: the slots from the record to its first spilled vertex.
+                let at = i + record[0] as usize;
+                if let Some(spill) = slots.get_mut(at..at + 4) {
+                    spill.fill(source);
+                }
+            }
+        }
+        slots
+    }
+
     /// Every face emitted since `start` belongs to this block, including multipart,
     /// connected-texture pieces, overlays and duplicated/back-facing fluid faces.
     fn record_source(&mut self, start: [usize; 2], source: TerrainSource) {
