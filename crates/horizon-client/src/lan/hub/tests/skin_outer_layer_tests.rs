@@ -36,11 +36,11 @@ fn a_players_skin_parts_reach_its_own_client() {
     hub.sync_player_state(0);
     assert!(skin(&rx).is_empty(), "an unchanged mask is not sent again");
     // CAPE (bit 0) and HAT (bit 6) off, as the client's skin customization screen sends.
-    hub.guests[0].info.model_customisation = 0x7F & !0x41;
+    hub.guests.update(0, |g| g.info.model_customisation = 0x7F & !0x41);
     hub.sync_player_state(0);
     assert_eq!(skin(&rx), [vec![(16, serializer::BYTE, Value::Byte(0x3E))]]);
     // Both ways: a layer put back is a change like any other.
-    hub.guests[0].info.model_customisation = 0x7F;
+    hub.guests.update(0, |g| g.info.model_customisation = 0x7F);
     hub.sync_player_state(0);
     assert_eq!(
         skin(&rx),
