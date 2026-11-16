@@ -4013,9 +4013,11 @@ def check_sleep(host, guest, out):
     # round trips take: a loaded machine spends that much between two socket
     # reads, and 10 ticks (half a second at 20 ticks a second) is the slack.
     # A guest that missed the sync is not off by ticks: the world jumps from
-    # 18000 to dawn, so an un-skipped clock stays 6000+ ticks away, and one
-    # that never took a SetTime is wherever its own clock ran to. Both are
-    # hundreds of times this tolerance; only RPC noise fits inside it.
+    # 18000 to dawn while the guest's clock runs on, so the unsynced read is
+    # still past 18000 against a world the assert above holds under 1000, and
+    # the short way round the 24000-tick day is about 5700-6000 ticks -- near
+    # six hundred times this tolerance. A guest that never took a SetTime is
+    # wherever its own clock ran to; only RPC noise fits the slack.
     slack = 10
     assert clock_gap(night_guest, night) <= slack, f'the guest clock left the world clock: {detail}'
     assert clock_gap(after['time_guest'], after['time']) <= slack, f'the woken guest kept the night: {detail}'
