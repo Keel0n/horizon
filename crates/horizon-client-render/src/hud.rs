@@ -1259,14 +1259,14 @@ impl HudAtlas {
             } else {
                 Some(defaults)
             };
-            let (source, path, image) = match decode_resource(root, path) {
-                Ok(image) => (root, path.clone(), image),
+            let (source, path, image, defaulted) = match decode_resource(root, path) {
+                Ok(image) => (root, path.clone(), image, false),
                 Err(e) => {
                     let shadowed = crate::atlas_sources::texture_resource(&name, "textures");
                     match shadow.map(|shadow| (shadow, decode_resource(shadow, &shadowed))) {
                         Some((shadow, Ok(image))) => {
                             log::warn!("GUI texture {path}: {e}; used the default's {name}");
-                            (shadow, shadowed, image)
+                            (shadow, shadowed, image, true)
                         }
                         _ => {
                             log::warn!("skipped GUI texture {path}: {e}");
@@ -1285,9 +1285,11 @@ impl HudAtlas {
             } else {
                 image
             };
-            // The default texture's size, when a pack's differs from it.
+            // The default texture's size, when a pack's differs from it. A sprite
+            // that fell back to the default is at that size already: the broken
+            // file's header must not give it another one.
             let gui_size = png_size(
-                defaults,
+                if defaulted { source } else { defaults },
                 &crate::atlas_sources::texture_resource(&name, "textures"),
             )
             .map(|(dw, dh)| {
@@ -4468,38 +4470,59 @@ texture=wide",
     }
     /// A texture the pack cannot decode keeps the default it shadows, rather
     /// than leaving the sprite out of the atlas (#15523). The overlay is the one
-    /// production resolves (`packs::resources`): the pack's file laid over the
-    /// game's own resources, whose atlas is built over the overlay as its own
-    /// defaults (`UiResources::load`, `stage_pack`).
+    /// production resolves: `packs::resources` lays a pack's file over the game's
+    /// own resources, a reload adds the generated sprites on top, and the atlas
+    /// is built over that overlay as its own defaults (`UiResources::load`,
+    /// `stage_pack`). The pack's broken file keeps a whole header at another
+    /// size: the default's own GUI size is kept, not the header's.
     #[test]
     fn an_undecodable_pack_texture_keeps_the_default_sprite() {
         let temp = std::env::temp_dir().join(format!("horizon-broken-skin-{}", std::process::id()));
-        let (defaults, pack) = (temp.join("defaults"), temp.join("pack"));
+        let (defaults, packs_dir) = (temp.join("defaults"), temp.join("packs"));
+        let pack = packs_dir.join("broken-skin");
         write_png(&defaults, "entity/player/wide/steve", 64, 32);
         let steve = "assets/minecraft/textures/entity/player/wide/steve.png";
         let broken = pack.join(steve);
         fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        write_png(&pack, "entity/player/wide/steve", 128, 128);
+        // A whole IHDR, no image: `png_size` reads it, the decoder refuses it.
+        let bytes = fs::read(&broken).unwrap();
+        fs::write(&broken, &bytes[..100]).unwrap();
         fs::write(
-            &broken,
-            [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00],
+            pack.join("pack.mcmeta"),
+            br#"{"pack":{"description":"d","pack_format":97}}"#,
         )
         .unwrap();
-        let overlay = ResourceSource::layered(
+        let resolved = crate::packs::resources(
+            ResourceSource::directory(defaults.clone()),
+            &crate::packs::folder(&packs_dir, crate::packs::RESOURCE_FORMAT),
+        )
+        .unwrap();
+        let overlay = horizon_assets::resource_source::ResourceRoot::new(
+            temp.clone(),
+            temp.clone(),
+            resolved,
+        )
+        .with_runtime_textures(
             [(
-                steve.to_owned(),
-                crate::resource_source::Resource::file(
-                    ResourceSource::directory(pack.clone()),
-                    steve.to_owned(),
-                ),
+                "assets/horizon/textures/generated.png".to_owned(),
+                crate::resource_source::Resource::bytes(vec![0]),
             )]
             .into(),
-            ResourceSource::directory(defaults.clone()),
-        );
+            Vec::new(),
+        )
+        .source()
+        .clone();
         let atlas = HudAtlas::build_over(&overlay, &overlay).unwrap();
         let _ = fs::remove_dir_all(&temp);
         let size = (atlas.width, atlas.height);
         let r = atlas.sprites["entity/player/wide/steve"];
         assert_eq!(r.texels(size), (64, 32), "the default skin is used");
+        assert_eq!(
+            (r.w, r.h),
+            (64, 32),
+            "and it keeps the default's GUI size, not the broken header's"
+        );
     }
 
     /// A bitmap font's `file` may be any texture, not only one under
