@@ -7,7 +7,7 @@
 //! `Player.stabAttack`). The hit's feedback (`onKineticHit`) reaches the
 //! players around as entity event 2. A left click jabs instead
 //! (`PiercingWeapon.attack`), which Lunge turns into a dash.
-use super::{Game, view_vector};
+use super::{Game, view_vector, lan_vehicles::ridden_known_movement};
 pub(super) use horizon_client::spear::hits_in_reach;
 use horizon_client::{
     attack_strength::delay,
@@ -55,9 +55,18 @@ impl Game<'_> {
     /// moved. A guest's comes with its moves, and while it rides, with its
     /// mount's (`handleMoveVehicle` → `handlePlayerKnownMovement`): a rider
     /// sends no position of its own, so a charge on horseback carries the
-    /// horse's speed. The window's own player follows its mount instead
-    /// (`positionRider`).
+    /// horse's speed. A passenger that is not at the reins takes the move of
+    /// the one that is (`Entity.getKnownSpeed`), and the window's own player
+    /// follows its mount instead (`positionRider`).
     pub(super) fn known_player_movement(&self) -> Vec3 {
+        if let (Some(conn), Some(vehicle)) = (self.lan_acting, self.riding)
+            && let Some(movement) = self
+                .lan
+                .as_ref()
+                .and_then(|host| ridden_known_movement(&host.hub.guests, conn, vehicle))
+        {
+            return movement;
+        }
         if self.lan_acting.is_some() {
             return self.known_movement;
         }

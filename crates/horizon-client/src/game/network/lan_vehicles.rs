@@ -11,6 +11,7 @@
 //! is teleported where the player lands (`ServerPlayer.dismountTo`).
 use super::{Dim, Game, Keys, lan::LanHost, minecarts::SEAT};
 use horizon_client::collisions::SceneCollisions;
+use horizon_client::lan::guest::Guest;
 use horizon_client::lan::hub::no_blocks_in;
 use horizon_client::mobs::equine;
 use horizon_core::geometry::{Aabb, Axis, Vec3};
@@ -717,18 +718,11 @@ impl Game<'_> {
     /// window player sits first when it rides; of the server's players it is
     /// the one that got in first.
     pub(super) fn guest_controls_vehicle(&self, conn: u32, vehicle: u32) -> bool {
-        let Some(host) = self.lan.as_ref() else {
-            return false;
-        };
-        if self.riding == Some(vehicle) {
-            return false;
-        }
-        host.hub
-            .guests
-            .iter()
-            .filter(|g| g.vehicle == Some(vehicle))
-            .min_by_key(|g| g.vehicle_order)
-            .is_some_and(|g| g.conn == conn)
+        self.riding != Some(vehicle)
+            && self
+                .lan
+                .as_ref()
+                .is_some_and(|host| vehicle_driver(&host.hub.guests, vehicle) == Some(conn))
     }
 
     /// `handlePaddleBoat`: the paddles of the boat the player controls
@@ -756,6 +750,30 @@ impl Game<'_> {
     }
 }
 
+/// `Entity.getControllingPassenger` of a vehicle a server player rides: a
+/// boat has two seats, and only its first player passenger drives it. The
+/// window player sits first when it rides — `guest_boarded` keeps a guest off
+/// a vehicle the window player rides — and of the server's players it is the
+/// one that got in first.
+pub(super) fn vehicle_driver(guests: &[Guest], vehicle: u32) -> Option<u32> {
+    guests
+        .iter()
+        .filter(|g| g.vehicle == Some(vehicle))
+        .min_by_key(|g| g.vehicle_order)
+        .map(|g| g.conn)
+}
+
+/// `ServerPlayer.getKnownMovement` of a rider that does not drive its
+/// vehicle: the vehicle's (`Entity.getKnownSpeed`), i.e. the move its
+/// controlling passenger's client sent for it (`handleMoveVehicle` →
+/// `handlePlayerKnownMovement`). `None` when `conn` is that passenger, or
+/// rides nothing: then its own move is its known movement.
+pub(super) fn ridden_known_movement(guests: &[Guest], conn: u32, vehicle: u32) -> Option<Vec3> {
+    let driver = vehicle_driver(guests, vehicle).filter(|&driver| driver != conn)?;
+    let [x, y, z] = guests.iter().find(|g| g.conn == driver)?.known_movement;
+    Some(Vec3::new(x, y, z))
+}
+
 /// `ServerGamePacketListenerImpl.containsInvalidValues(DDDFF)`: a NaN coordinate or a rotation
 /// that is not finite. An infinite coordinate is valid there: `handleMoveVehicle` clamps it and
 /// goes on with the usual checks, so it does not disconnect.
@@ -765,9 +783,11 @@ fn contains_invalid_values([x, y, z]: [f64; 3], yaw: f32, pitch: f32) -> bool {
 
 #[cfg(test)]
 mod controller_tests {
+    use super::{ridden_known_movement, vehicle_driver};
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use horizon_client::chunk::Chunk;
     use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::geometry::Vec3;
     use horizon_core::position::ChunkPos;
     use horizon_protocol::packets::{configuration::ClientInformation, play};
     use std::sync::{Arc, atomic::AtomicI32, mpsc};
@@ -805,6 +825,46 @@ mod controller_tests {
         // PlayerLoaded came in: its moves count.
         g.load_timeout = 0;
         (g, rx)
+    }
+
+    /// `ServerPlayer.getKnownMovement` of a rider that is not at the reins: it
+    /// takes the vehicle's (`Entity.getKnownSpeed`), the move its controlling
+    /// passenger's client sent for it (`handleMoveVehicle` →
+    /// `handlePlayerKnownMovement`). A rider sends no position of its own, so
+    /// the second seat of a boat has nothing of its own to carry: a spear
+    /// charge there reads the boat's speed, as the driver's does (#17092).
+    #[test]
+    fn a_passenger_that_does_not_drive_takes_its_vehicles_move() {
+        let (mut passenger, _) = guest_with_packets(2, 21);
+        let (mut driver, _) = guest_with_packets(3, 22);
+        (driver.vehicle, driver.vehicle_order) = (Some(7), 1);
+        (passenger.vehicle, passenger.vehicle_order) = (Some(7), 2);
+        driver.known_movement = [0.3, 0.0, 0.0];
+        assert_eq!(
+            passenger.known_movement, [0.0; 3],
+            "a rider that drives nothing sent no move of its own"
+        );
+        let guests = [passenger, driver];
+        assert_eq!(
+            vehicle_driver(&guests, 7),
+            Some(3),
+            "the one that got in first drives it"
+        );
+        assert_eq!(
+            ridden_known_movement(&guests, 2, 7),
+            Some(Vec3::new(0.3, 0.0, 0.0)),
+            "the second seat carries the boat's move"
+        );
+        assert_eq!(
+            ridden_known_movement(&guests, 3, 7),
+            None,
+            "the driver's known movement is the one it sent"
+        );
+        assert_eq!(
+            ridden_known_movement(&guests, 2, 9),
+            None,
+            "a passenger of another vehicle takes nothing from it"
+        );
     }
 
     /// vanilla's `containsInvalidValues`: only a NaN coordinate or a non-finite rotation is invalid.
@@ -962,6 +1022,18 @@ mod controller_tests {
             (game.boats[0].position.x - (start.x + 0.3)).abs() < 1.0e-9,
             "the driver moves the boat: {:?}",
             game.boats[0].position
+        );
+        // `ServerPlayer.getKnownMovement` of the second seat: it does not
+        // drive the boat, so it takes the vehicle's (`Entity.getKnownSpeed`)
+        // — the move the driver's client sent. A rider sends no position of
+        // its own, and a spear charge reads this as the speed it stabs with
+        // (`KineticWeapon.getMotion`), so without it the second seat stabbed
+        // as if it stood still.
+        let seen = game.as_guest(2, |g| g.known_player_movement());
+        let [x, y, z] = seen.map(|m| [m.x, m.y, m.z]).unwrap();
+        assert!(
+            (x - 0.3).abs() < 1.0e-9 && y == 0.0 && z == 0.0,
+            "the second seat's charge carries the boat's move: {seen:?}"
         );
         // handleMoveVehicle's `vehicle.move` runs AbstractBoat.checkFallDamage:
         // a boat that lands on the ground (a fall loaded from its save, here)
