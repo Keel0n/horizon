@@ -3949,6 +3949,12 @@ def bed_at(game, foot):
     return [x + 1, y, z]
 
 
+def clock_gap(a, b):
+    """Ticks between two day times, the short way round the 24000-tick day."""
+    gap = abs(a - b) % 24000
+    return min(gap, 24000 - gap)
+
+
 def check_sleep(host, guest, out):
     for g in (host, guest):
         g('command', command='gamemode survival')
@@ -4000,9 +4006,12 @@ def check_sleep(host, guest, out):
     assert after['guest'] is None and after['host'] is None and after['time'] < 1000, f'no morning: {detail}'
     # ClientClockManager takes the skipped night from the SetTime the hub
     # broadcasts (ServerClockManager.modifyClock): the guest's day time stays
-    # the world's, in bed and woken (#16656).
-    assert night_guest == night, f'the guest clock left the world clock: {detail}'
-    assert after['time_guest'] == after['time'], f'the woken guest kept the night: {detail}'
+    # the world's, in bed and woken (#16656). The guest's clock ticks on its
+    # own between those broadcasts and the two reads are an RPC apart, so it
+    # trails the world's by a tick or two: a clock that missed the sync is
+    # thousands of ticks off, which a handful of ticks of slack still catches.
+    assert clock_gap(night_guest, night) <= 2, f'the guest clock left the world clock: {detail}'
+    assert clock_gap(after['time_guest'], after['time']) <= 2, f'the woken guest kept the night: {detail}'
     assert lying['host'] and lying['guest'], f'a sleeping player is drawn standing: {detail}'
     assert not lying['after'], f'a player up again is still drawn lying: {detail}'
     return detail
