@@ -57,7 +57,9 @@ impl Game<'_> {
     /// sends no position of its own, so a charge on horseback carries the
     /// horse's speed. A passenger that is not at the reins takes the move of
     /// the one that is (`Entity.getKnownSpeed`), and the window's own player
-    /// follows its mount instead (`positionRider`).
+    /// follows its mount instead (`positionRider`). A vehicle no guest drives
+    /// keeps its own move unread here yet — `ridden_known_movement` says
+    /// which cases that leaves.
     pub(super) fn known_player_movement(&self) -> Vec3 {
         if let (Some(conn), Some(vehicle)) = (self.lan_acting, self.riding)
             && let Some(movement) = self
