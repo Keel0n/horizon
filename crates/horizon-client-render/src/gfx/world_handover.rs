@@ -54,6 +54,7 @@ impl Renderer {
             lod_pending,
             detail_columns,
             detail_revision,
+            upload_retries,
             block_entities,
             block_entity_section_revisions,
             block_entity_membership_revisions,
