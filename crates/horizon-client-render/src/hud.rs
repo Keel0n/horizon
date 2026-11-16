@@ -1250,17 +1250,25 @@ impl HudAtlas {
             // player skin whose file fails keeps the first-person arm drawable
             // (#15523), as vanilla draws the default skin there. The default is the
             // same resource read from `defaults`, and an mcmeta comes with whichever
-            // source the image came from.
+            // source the image came from. A caller that layers packs over the game's
+            // own resources passes the resolved overlay as its own `defaults`, as both
+            // production call sites do: the default is then the layer that overlay was
+            // resolved over (`ResourceSource::underlay`), not the broken file again.
+            let shadow = if defaults.same_generation(root) {
+                root.underlay()
+            } else {
+                Some(defaults)
+            };
             let (source, path, image) = match decode_resource(root, path) {
                 Ok(image) => (root, path.clone(), image),
                 Err(e) => {
                     let shadowed = crate::atlas_sources::texture_resource(&name, "textures");
-                    match decode_resource(defaults, &shadowed) {
-                        Ok(image) => {
+                    match shadow.map(|shadow| (shadow, decode_resource(shadow, &shadowed))) {
+                        Some((shadow, Ok(image))) => {
                             log::warn!("GUI texture {path}: {e}; used the default's {name}");
-                            (defaults, shadowed, image)
+                            (shadow, shadowed, image)
                         }
-                        Err(_) => {
+                        _ => {
                             log::warn!("skipped GUI texture {path}: {e}");
                             return None;
                         }
@@ -4458,26 +4466,36 @@ texture=wide",
             assert_eq!(((r.w, r.h), r.texels(size)), (gui, texels), "{name}");
         }
     }
-    /// A texture the pack cannot decode falls back to the default it
-    /// shadows, rather than leaving the sprite out of the atlas (#15523).
+    /// A texture the pack cannot decode keeps the default it shadows, rather
+    /// than leaving the sprite out of the atlas (#15523). The overlay is the one
+    /// production resolves (`packs::resources`): the pack's file laid over the
+    /// game's own resources, whose atlas is built over the overlay as its own
+    /// defaults (`UiResources::load`, `stage_pack`).
     #[test]
     fn an_undecodable_pack_texture_keeps_the_default_sprite() {
         let temp = std::env::temp_dir().join(format!("horizon-broken-skin-{}", std::process::id()));
         let (defaults, pack) = (temp.join("defaults"), temp.join("pack"));
         write_png(&defaults, "entity/player/wide/steve", 64, 32);
-        write_png(&pack, "gui/container/inventory", 256, 256);
-        let broken = pack.join("assets/minecraft/textures/entity/player/wide/steve.png");
+        let steve = "assets/minecraft/textures/entity/player/wide/steve.png";
+        let broken = pack.join(steve);
         fs::create_dir_all(broken.parent().unwrap()).unwrap();
         fs::write(
             &broken,
             [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00],
         )
         .unwrap();
-        let atlas = HudAtlas::build_over(
-            &horizon_assets::resource_source::ResourceSource::directory(pack.to_path_buf()),
-            &horizon_assets::resource_source::ResourceSource::directory(defaults.to_path_buf()),
-        )
-        .unwrap();
+        let overlay = ResourceSource::layered(
+            [(
+                steve.to_owned(),
+                crate::resource_source::Resource::file(
+                    ResourceSource::directory(pack.clone()),
+                    steve.to_owned(),
+                ),
+            )]
+            .into(),
+            ResourceSource::directory(defaults.clone()),
+        );
+        let atlas = HudAtlas::build_over(&overlay, &overlay).unwrap();
         let _ = fs::remove_dir_all(&temp);
         let size = (atlas.width, atlas.height);
         let r = atlas.sprites["entity/player/wide/steve"];
