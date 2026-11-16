@@ -4006,12 +4006,19 @@ def check_sleep(host, guest, out):
     assert after['guest'] is None and after['host'] is None and after['time'] < 1000, f'no morning: {detail}'
     # ClientClockManager takes the skipped night from the SetTime the hub
     # broadcasts (ServerClockManager.modifyClock): the guest's day time stays
-    # the world's, in bed and woken (#16656). The guest's clock ticks on its
-    # own between those broadcasts and the two reads are an RPC apart, so it
-    # trails the world's by a tick or two: a clock that missed the sync is
-    # thousands of ticks off, which a handful of ticks of slack still catches.
-    assert clock_gap(night_guest, night) <= 2, f'the guest clock left the world clock: {detail}'
-    assert clock_gap(after['time_guest'], after['time']) <= 2, f'the woken guest kept the night: {detail}'
+    # the world's, in bed and woken (#16656).
+    #
+    # The two day times are two RPCs into two processes, with the guest's own
+    # clock ticking in between, so one read trails the other by however long the
+    # round trips take: a loaded machine spends that much between two socket
+    # reads, and 10 ticks (half a second at 20 ticks a second) is the slack.
+    # A guest that missed the sync is not off by ticks: the world jumps from
+    # 18000 to dawn, so an un-skipped clock stays 6000+ ticks away, and one
+    # that never took a SetTime is wherever its own clock ran to. Both are
+    # hundreds of times this tolerance; only RPC noise fits inside it.
+    slack = 10
+    assert clock_gap(night_guest, night) <= slack, f'the guest clock left the world clock: {detail}'
+    assert clock_gap(after['time_guest'], after['time']) <= slack, f'the woken guest kept the night: {detail}'
     assert lying['host'] and lying['guest'], f'a sleeping player is drawn standing: {detail}'
     assert not lying['after'], f'a player up again is still drawn lying: {detail}'
     return detail
