@@ -4909,6 +4909,11 @@ impl Hub {
             keep: 0,
         }));
         g.sent_pose = crate::pose::Pose::Standing;
+        // ClientPacketListener.handleRespawn without KEEP_ENTITY_DATA: the client's new player is
+        // built from zero data, so the skin parts its dead one held are gone too. Pairing this
+        // reset with the pose's keeps the outer layer sent again on the next tick; without it the
+        // mask counted as sent and the layer stayed missing until the skin screen (#17123).
+        g.sent_skin = 0;
         // ClientPacketListener.handleRespawn without KEEP_ENTITY_DATA: the client's new player
         // starts with wasSprinting false. (A level change keeps it: the new player sprints on, or
         // says STOP.)
