@@ -168,7 +168,7 @@ def main():
     if args.compare:
         compare(*args.compare)
         return
-    ctl = Path(args.build).resolve() / "horizon-ctl"
+    ctl = lab.binary(Path(args.build).resolve(), "horizon-ctl")
     if not ctl.exists():
         sys.exit(f"{ctl} missing: cargo build --release -p horizon-client -p horizon-client-lib --bins")
     cwd = ROOT / ".local/graphics-bench"
