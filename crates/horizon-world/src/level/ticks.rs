@@ -96,19 +96,24 @@ impl Ticks {
     }
     /// `ServerLevel.tick`'s `handlingTick = true` (ServerLevel.java:360): the
     /// level's tick has started, and it stays up until that tick's block
-    /// events have run (:412). Between the two the whole vanilla tick body
-    /// answers [`Ticks::is_handling_tick`]: the world border, the weather and
-    /// the clock (:365-388), the scheduled block then fluid ticks
-    /// (`blockTicks.tick`, `fluidTicks.tick`, :394-396), the raids (:402),
-    /// `ServerChunkCache.tick` (:406, which random-ticks the ticking chunks
-    /// and broadcasts the changed blocks) and `ServerLevel.runBlockEvents`
-    /// (:409). The entities (:423-453) and the block entities (:455) tick
-    /// below :412, outside it.
+    /// events have run (:412). The only reader is `PistonBaseBlock`
+    /// (PistonBaseBlock.java:108, through `isHandlingTick`), so what the span
+    /// must cover are the phases that can run a block's neighbour change:
+    /// the scheduled block then fluid ticks (`blockTicks.tick`,
+    /// `fluidTicks.tick`, :394-396), `ServerChunkCache.tick` (:406, which
+    /// random-ticks the ticking chunks and broadcasts the changed blocks) and
+    /// `ServerLevel.runBlockEvents` (:409). The phases before them (the world
+    /// border, the weather and the clock, :365-388; the raids, :402) sit
+    /// inside the span in vanilla but run before the bracket here: none of
+    /// them runs a `neighborChanged` a piston could read, so the answers stay
+    /// vanilla's. The entities (:423-453) and the block entities (:455) tick
+    /// below :412, outside it — there the flag is down, as in vanilla, and a
+    /// moving piston finishing in that pass still asks for event 1.
     ///
     /// Raise it once per level tick, not per phase: a piston that loses its
     /// signal in any phase of the span answers `PistonBaseBlock.checkIfExtend`
-    /// (PistonBaseBlock.java:108) as vanilla does — event 2 (`TRIGGER_DROP`)
-    /// for a pushed block still in flight, not event 1 (`TRIGGER_CONTRACT`).
+    /// as vanilla does — event 2 (`TRIGGER_DROP`) for a pushed block still in
+    /// flight, not event 1 (`TRIGGER_CONTRACT`).
     pub fn begin_handling_tick(&mut self) {
         self.handling_tick += 1;
     }

@@ -263,6 +263,11 @@ impl Game<'_> {
         // between them (the broadcast, an eager save, the level events of the
         // ticks already run) are inside the same span in vanilla too.
         //
+        // The phases vanilla runs above :394 but before the bracket here (the
+        // world border, the weather and the clock, :365-388; the raids, :402)
+        // run with the flag down: none of them reaches a block's neighbour
+        // change, so no piston reads it there.
+        //
         // The entity sweep above is the tick's entity pass in vanilla
         // (:423-453), moved here to run before the blocks it presses; it
         // stays outside the flag, as do the entities and the block entities

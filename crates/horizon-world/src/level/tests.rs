@@ -2102,7 +2102,11 @@ fn tnt_duper_3856_piston_keeps_original_and_primes_one_tnt() {
                 base,
                 f.behaviours.block(power),
             );
+            // The event runs inside the level tick's `handlingTick`
+            // (ServerLevel.java:360-412).
+            w.ticks.begin_handling_tick();
             f.behaviours.run_block_events(&mut w.level, &mut w.ticks);
+            w.ticks.end_handling_tick();
         }
         let primed = w
             .level
