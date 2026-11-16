@@ -1227,13 +1227,14 @@ mod controller_tests {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
         let loaded = load_resources(
-            root.clone(),
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
             None,
             &root,
             &settings,
             std::time::Instant::now(),
             false,
-            true,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
             &Progress::new(),
             &mut |_, _| unreachable!(),
         )
@@ -1250,7 +1251,9 @@ mod controller_tests {
             loaded.gui.unwrap(),
             options,
             settings,
-            Audio::silent(&root),
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
             None,
         )
         .unwrap();
@@ -1276,7 +1279,7 @@ mod controller_tests {
         assert!(game.run_command("forceload add 0 0"));
         assert!(game.run_command("summon minecraft:horse 4.5 200 4.5 {NoAI:1b,Tame:1b}"));
         let horse = game.mobs[0].id;
-        game.mobs[0].extra.saddled = true;
+        game.mobs[0].extra.set_saddled(true);
         game.mobs[0].rider = Some(horizon_client::mobs::equine::Rider {
             client: true,
             ..Default::default()
@@ -1304,6 +1307,7 @@ mod controller_tests {
                 max_players: 3,
                 integrated: false,
                 levels: Default::default(),
+                level_seeds: Default::default(),
             },
         )
         .unwrap();
@@ -1318,7 +1322,9 @@ mod controller_tests {
             pitch: 0.0,
             on_ground: true,
         };
-        game.guest_move_vehicle(&mut host, 2, &move_to(4.9));
+        game.lan = Some(host);
+        game.guest_move_vehicle(2, &move_to(4.9));
+        host = game.lan.take().unwrap();
         assert_eq!(game.mobs[0].position.x, 4.9, "the guest moves the horse");
         let moved = host.hub.guests[0].known_movement;
         assert!(
@@ -1331,7 +1337,9 @@ mod controller_tests {
         // rider's speed is still the move the client sent, so a spear charge
         // on horseback carries the horse's speed instead of none.
         game.mobs[0].previous = game.mobs[0].position;
-        let seen = game.as_guest(&mut host, 2, |g| g.known_player_movement());
+        game.lan = Some(host);
+        let seen = game.as_guest(2, |g| g.known_player_movement());
+        host = game.lan.take().unwrap();
         assert_eq!(
             seen.map(|m| [m.x, m.y, m.z]),
             Some(moved),
@@ -1340,10 +1348,12 @@ mod controller_tests {
         // handleClientTickEnd keeps the move of the tick it came in...
         let expected = [moved, [0.0; 3]];
         for (round, want) in expected.iter().enumerate() {
-            host.hub.guests[0].inbox.push_back((
-                play::Serverbound::ClientTickEnd(horizon_protocol::packets::Empty),
-                0,
-            ));
+            host.hub.guests.update(0, |g| {
+                g.inbox.push_back(crate::lan::guest::InboxItem::Packet(
+                    play::Serverbound::ClientTickEnd(horizon_protocol::packets::Empty),
+                    None,
+                ));
+            });
             game.lan = Some(host);
             game.tick_lan_packets();
             host = game.lan.take().unwrap();
