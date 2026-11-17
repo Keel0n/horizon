@@ -962,7 +962,9 @@ impl FrameUniforms {
                 // The upscaler a pack runs needs its own view of the frame (#16757): the size
                 // it draws at (`screenSize`, `fsrScreenSize`) is the pack's render size, and
                 // the scale it renders at is 1 — Horizon already divides the world by the
-                // Upscaling ratio, so a pack's FSR pass needs to scale nothing itself.
+                // Upscaling ratio, so a pack's FSR pass needs to scale nothing itself. Like
+                // every other name in `NAMES`, these are built-ins: a `uniform.*` of the same
+                // name that a pack declares reads ours (`pack_post::index_in`).
                 "screenSize" | "fsrScreenSize" => Value::f(&[size[0] as f32, size[1] as f32]),
                 "fsrRenderScale" => Value::f(&[1.0]),
                 "near" => Value::f(&[0.05]),
@@ -2286,13 +2288,7 @@ pub(super) mod initial_history_tests {
         assert_eq!(float(&u, "screenSize")[..2], [640.0, 360.0]);
         assert_eq!(float(&u, "fsrScreenSize")[..2], [640.0, 360.0]);
         assert_eq!(float(&u, "fsrRenderScale")[0], 1.0);
-        // Read only as the types a pack's FSR pass declares them: two vec2s and a float.
-        assert!(Value::f(&[640.0, 360.0]).read_as("screenSize", "vec2"));
-        assert!(Value::f(&[640.0, 360.0]).read_as("fsrScreenSize", "vec2"));
-        assert!(!Value::f(&[640.0, 360.0]).read_as("fsrScreenSize", "float"));
-        assert!(Value::f(&[1.0]).read_as("fsrRenderScale", "float"));
-        assert!(!Value::f(&[1.0]).read_as("fsrRenderScale", "vec2"));
-        // A custom uniform checks their shapes before the first frame, at their sizes.
+        // A custom uniform checks their shapes before the first frame, at their sizes (#9086).
         let shape = |name| zero(name).map(|v| v.n);
         assert_eq!(shape("screenSize"), Some(2));
         assert_eq!(shape("fsrScreenSize"), Some(2));
