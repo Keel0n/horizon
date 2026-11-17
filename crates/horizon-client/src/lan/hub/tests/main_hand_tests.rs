@@ -1,0 +1,146 @@
+//! horizon-rust/horizon#17877: the main-hand choice as synched entity data.
+//!
+//! Vanilla's `Avatar.DATA_PLAYER_MAIN_HAND` is entity data index 15, a
+//! `HumanoidArm` (serializer 42) whose default is RIGHT = 1 and whose LEFT is
+//! 0 (`Avatar.java:38`, `HumanoidArm.java:13-14`). Its dirty entries go to the
+//! player itself as well as to every tracker (`ChunkMap.java:1352-1356`), and
+//! only when they differ from the default, so a right-handed player is never
+//! sent the index and a left-handed one is, once.
+use super::*;
+
+/// The index of a `HumanoidArm` value in `EntityDataSerializers`.
+const HUMANOID_ARM: i32 = 42;
+
+/// Every `SetEntityData` entry of index 15 sent to the receiver, as
+/// (entity, index, serializer, value).
+fn main_hand_frames(rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -> Vec<(i32, u8, i32, Value)> {
+    let mut frames = Vec::new();
+    while let Ok(out) = rx.try_recv() {
+        let crate::lan::Out::Packet(body) = out else {
+            continue;
+        };
+        let mut r = horizon_protocol::buf::Reader::new(&body);
+        let id = r.varint().unwrap();
+        if let C::SetEntityData(p) = C::decode(id, r.rest()).unwrap() {
+            frames.extend(
+                p.values
+                    .into_iter()
+                    .filter(|(index, _, _)| *index == 15)
+                    .map(|(index, serializer, value)| (p.id, index, serializer, value)),
+            );
+        }
+    }
+    frames
+}
+
+/// The guest's own client: the hand its own model draws the item in.
+#[test]
+fn the_main_hand_reaches_the_players_own_client_on_a_change() {
+    let (mut hub, rx) = hub_with_a_guest();
+    // `ClientInformation::new` asks for RIGHT = 1, the default: vanilla's
+    // synched data carries only what differs from it, so nothing goes out.
+    hub.sync_player_state(0);
+    assert_eq!(main_hand_frames(&rx), [], "the default hand is not sent");
+    // LEFT = 0 is not the default: one frame, to the player's own entity.
+    hub.guests.update(0, |g| g.info.main_hand = 0);
+    hub.sync_player_state(0);
+    assert_eq!(
+        main_hand_frames(&rx),
+        [(1, 15, HUMANOID_ARM, Value::Id(0))],
+        "the left hand goes to the player itself"
+    );
+    hub.sync_player_state(0);
+    assert_eq!(main_hand_frames(&rx), [], "the same hand is not sent again");
+    // Back to the right hand: the change itself is a dirty entry.
+    hub.guests.update(0, |g| g.info.main_hand = 1);
+    hub.sync_player_state(0);
+    assert_eq!(
+        main_hand_frames(&rx),
+        [(1, 15, HUMANOID_ARM, Value::Id(1))],
+        "the hand changed back to RIGHT"
+    );
+    hub.sync_player_state(0);
+    assert_eq!(main_hand_frames(&rx), []);
+}
+
+/// PlayerList.respawn makes a new ServerPlayer, whose tracker sends its
+/// synched data afresh: a left-handed player's hand goes out again.
+#[test]
+fn a_left_handed_player_is_sent_its_hand_again_after_a_respawn() {
+    let (mut hub, rx) = hub_with_a_guest();
+    hub.guests.update(0, |g| g.info.main_hand = 0);
+    hub.sync_player_state(0);
+    assert_eq!(main_hand_frames(&rx), [(1, 15, HUMANOID_ARM, Value::Id(0))]);
+    let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+    let mut next_entity = 2;
+    let border = crate::worldborder::WorldBorder::default();
+    let ctx = TickCtx {
+        sea_level: 63,
+        world: &mut world,
+        entities: &[],
+        next_entity: &mut next_entity,
+        spawn: [0.5, 64.0, 0.5],
+        spawn_angle: [0.0; 2],
+        difficulty: 2,
+        difficulty_locked: false,
+        clock_rate: 1.0,
+        tick_rate: 20.0,
+        tick_frozen: false,
+        tick_steps: Default::default(),
+        collision: None,
+        border: &border,
+        streaming: None,
+    };
+    hub.respawn(0, [0.5, 64.0, 0.5], Some([0.0; 2]), &ctx);
+    assert_eq!(main_hand_frames(&rx), [], "the respawn alone sends no hand");
+    hub.sync_player_state(0);
+    assert_eq!(
+        main_hand_frames(&rx),
+        [(1, 15, HUMANOID_ARM, Value::Id(0))],
+        "the new player's tracker sends the non-default hand again"
+    );
+    hub.sync_player_state(0);
+    assert_eq!(main_hand_frames(&rx), []);
+}
+
+/// Other players' model draws the item in the hand the player chose
+/// (`ArmedEntityRenderState.mainArm`), which their clients cannot guess.
+#[test]
+fn other_players_are_told_a_left_hand_but_never_the_default_one() {
+    let (hub, _rx) = hub_with_a_guest();
+    let state = |main_hand: i32| {
+        hub.player_state(
+            1,
+            1,
+            [0.5, 64.0, 0.5],
+            (0.0, 0.0, 0.0),
+            true,
+            (false, false, false),
+            BodyFlags::default(),
+            0,
+            None,
+            0,
+            main_hand,
+            20.0,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .meta
+    };
+    let hand = |meta: Vec<(u8, i32, Value)>| {
+        meta.into_iter()
+            .filter(|(index, _, _)| *index == 15)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        hand(state(0)),
+        [(15, HUMANOID_ARM, Value::Id(0))],
+        "a left-handed player is drawn left-handed by the others"
+    );
+    assert_eq!(
+        hand(state(1)),
+        [],
+        "the default RIGHT is left out, as vanilla's data does"
+    );
+}
