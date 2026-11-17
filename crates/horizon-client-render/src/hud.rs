@@ -307,12 +307,13 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     }
     Ok((info.width, info.height, rgba))
 }
-/// The most texels of OptiFine random entity variants the entity atlas packs: 2048 rows of
-/// its 4096, which keeps the default atlas (4096x5120) under the 8192 rows many GPUs take.
+/// The most texels of OptiFine random entity variants and custom entity models' textures the
+/// entity atlas packs: 2048 rows of its 4096, which keeps the default atlas (4096x5120) under
+/// the 8192 rows many GPUs take.
 const RANDOM_TEXELS: u64 = 4096 * 2048;
-/// The variant images (and `overlays`) the atlas packs: every variant before any overlay, by
-/// name, while their sizes add up to at most `budget` texels. A full budget drops glows before
-/// looks.
+/// The images beside the textures the atlas walks (random variants, custom entity models'
+/// textures) and their `overlays` the atlas packs: every one before any overlay, by name, while
+/// their sizes add up to at most `budget` texels. A full budget drops glows before looks.
 fn budgeted<'a>(
     source: &ResourceSource,
     files: impl Iterator<Item = &'a String>,
@@ -1145,8 +1146,8 @@ impl HudAtlas {
             }
         }
         files.retain(|p| !menu_pictures::menu_picture_only(p));
-        // OptiFine random entity variants, under the names their scan gives them (those
-        // outside `textures/` are `<ns>:optifine/random/...`).
+        // OptiFine random entity variants and custom entity models' textures, under the names
+        // their scans give them (those outside `textures/` are `<ns>:optifine/...`).
         let random_textures = if folders.contains(&"entity") {
             horizon_optifine::random_textures::RandomTextures::scan(root)
         } else {
@@ -1172,10 +1173,15 @@ impl HudAtlas {
         for (file, name) in extra {
             named.insert(file.to_owned(), name.to_owned());
         }
+        // The PNGs beside a `.jem` under `optifine/cem/` or `emf/cem/`: no `textures/` walk
+        // reaches them, and a model's own texture is one the atlas has to pack.
+        if folders.contains(&"entity") {
+            named.extend(horizon_optifine::cem::files::texture_files(root));
+        }
         if !named.is_empty() {
-            // A pack's variants can't grow the shared atlas past what a GPU takes: every variant
-            // (those beside their texture too) counts, in name order, and those past the budget
-            // stay out (their mobs wear the texture itself), not the whole pack.
+            // A pack's variants and model textures can't grow the shared atlas past what a GPU
+            // takes: every one (those beside their texture too) counts, in name order, and those
+            // past the budget stay out (their mobs wear the texture itself), not the whole pack.
             // Overlays and blink frames only after every variant.
             let overlays: HashSet<String> = emissive
                 .files()
@@ -1185,7 +1191,7 @@ impl HudAtlas {
             let kept = budgeted(root, named.keys(), &overlays, RANDOM_TEXELS);
             if kept.len() < named.len() {
                 log::warn!(
-                    "{} random entity textures left out of the atlas: past its budget",
+                    "{} entity textures left out of the atlas: past its budget",
                     named.len() - kept.len()
                 );
             }
@@ -3707,6 +3713,20 @@ mod tests {
         let rect = atlas.sprites["entity/cat/cat2"];
         assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
         assert!(atlas.random_textures.get("entity/pig/pig").is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+    /// A custom entity model's texture beside its model, outside `textures/`, packs under the
+    /// name `atlas_name` gives it, so the model draws with it.
+    #[test]
+    fn cem_texture_beside_its_model_packs_under_its_atlas_name() {
+        let root = std::env::temp_dir().join(format!("horizon-atlas-cem-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let cem = root.join("assets/minecraft/optifine/cem");
+        fs::create_dir_all(&cem).unwrap();
+        write_strip(&cem.join("zombie2.png"), 64, 32, &[[0, 200, 0, 255]], None);
+        let atlas = HudAtlas::build(&ResourceSource::directory(root.clone())).unwrap();
+        let rect = atlas.sprites["minecraft:optifine/cem/zombie2"];
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 200, 0, 255]);
         fs::remove_dir_all(&root).unwrap();
     }
     /// A random variant's emissive overlay packs beside the variant, under its name.
