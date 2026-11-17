@@ -1138,8 +1138,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 // `CropBlock.mayPlaceOn`: the plant's own rule, which a mod may replace.
                 let below = relative(position, Direction::Down);
                 let ground = self.read(world, below)?;
-                if let Some(may) =
-                    crate::native_worldgen_hooks::may_place_on(state, ground, below)
+                if let Some(may) = crate::native_worldgen_hooks::may_place_on(state, ground, below)
                 {
                     return Ok(may);
                 }
@@ -1173,8 +1172,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 // before the tag the table holds for it decides.
                 let below = relative(position, Direction::Down);
                 let ground = self.read(world, below)?;
-                if let Some(may) =
-                    crate::native_worldgen_hooks::may_place_on(state, ground, below)
+                if let Some(may) = crate::native_worldgen_hooks::may_place_on(state, ground, below)
                 {
                     return Ok(may);
                 }
