@@ -260,6 +260,7 @@ mod tests {
     /// the render thread.
     #[test]
     fn a_quad_index_buffer_the_device_will_not_take_is_reported_not_panicked_on() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Some(adapter) = pollster::block_on(instance.request_adapter(&Default::default())).ok()
         else {
