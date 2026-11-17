@@ -2400,16 +2400,22 @@ async fn open_device(
     // on it), and a watchdog ends the start instead of leaving the boot screen forever.
     let timeout = device_open_timeout();
     let searched = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (disarm, _watchdog) =
-        arm_search_watchdog(timeout, DEVICE_OPEN_GRACE, searched.clone(), move || {
-            let message = device_search_timed_out(timeout);
-            log::error!("{message}");
+    let (disarm, _watchdog) = arm_search_watchdog(
+        timeout,
+        DEVICE_OPEN_GRACE,
+        searched.clone(),
+        move || {
+            log::error!("{}", device_search_timed_out(timeout));
             log::logger().flush();
+        },
+        move || {
+            let message = device_search_timed_out(timeout);
             // The panic hook reports and ends the game (a start stuck inside a driver call
             // never dies on its own). The watchdog's thread name takes the hook's worker-thread
             // path: a crash report, then exit code 101.
             panic!("{message}");
-        });
+        },
+    );
     let opened = open_device_search(window.clone(), offscreen, wgpu_backend, api, needs).await;
     searched.store(true, std::sync::atomic::Ordering::Release);
     drop(disarm);
@@ -2458,13 +2464,14 @@ async fn open_device_search(
 /// driver, where nothing in this process can interrupt it, so when it outlives its timeout
 /// the driver hung and waiting longer cannot end. It waits one `grace` more for the log's
 /// line to reach the boot screen and for `searched`, which the start sets when the search
-/// returns: one that answers inside that window was slow, not hung, and runs on. `on_fire`
-/// reports and ends the game. A sent value or the sender's drop disarms it, as a finished
+/// returns: one that answers inside that window was slow, not hung, and runs on. `on_timeout`
+/// reports the timeout; `on_fire` ends the game if the search is still stuck. A sent value or the sender's drop disarms it, as a finished
 /// or failed search does.
 fn arm_search_watchdog(
     timeout: Duration,
     grace: Duration,
     searched: Arc<std::sync::atomic::AtomicBool>,
+    on_timeout: impl FnOnce() + Send + 'static,
     on_fire: impl FnOnce() + Send + 'static,
 ) -> (
     std::sync::mpsc::Sender<()>,
@@ -2477,6 +2484,7 @@ fn arm_search_watchdog(
             if receiver.recv_timeout(timeout) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
                 return;
             }
+            on_timeout();
             std::thread::sleep(grace);
             if !searched.load(std::sync::atomic::Ordering::Acquire) {
                 on_fire();
@@ -12032,6 +12040,7 @@ mod tests {
             Duration::from_millis(20),
             Duration::from_millis(0),
             searched,
+            || {},
             move || {
                 let _ = fired.send(());
             },
@@ -12051,6 +12060,7 @@ mod tests {
             Duration::from_millis(20),
             Duration::from_millis(0),
             searched,
+            || {},
             move || {
                 also.store(true, std::sync::atomic::Ordering::Relaxed);
             },
@@ -12070,6 +12080,7 @@ mod tests {
     /// the start it had just finished (#16769).
     #[test]
     fn a_search_that_answers_inside_the_grace_runs_on() {
+        let (timeout_tx, timeout_rx) = std::sync::mpsc::channel();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let also = fired.clone();
         let searched = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -12078,11 +12089,17 @@ mod tests {
             Duration::from_millis(400),
             searched.clone(),
             move || {
+                timeout_tx.send(()).unwrap();
+            },
+            move || {
                 also.store(true, std::sync::atomic::Ordering::Relaxed);
             },
         );
         // Past the timeout, inside the grace: this is the window the grace exists for.
-        std::thread::sleep(Duration::from_millis(60));
+        timeout_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("timeout reported before grace");
+        assert!(!fired.load(std::sync::atomic::Ordering::Relaxed));
         searched.store(true, std::sync::atomic::Ordering::Release);
         drop(disarm);
         watchdog
