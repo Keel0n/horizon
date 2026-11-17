@@ -102,13 +102,18 @@ impl Ticks {
     /// the scheduled block then fluid ticks (`blockTicks.tick`,
     /// `fluidTicks.tick`, :394-396), `ServerChunkCache.tick` (:406, which
     /// random-ticks the ticking chunks and broadcasts the changed blocks) and
-    /// `ServerLevel.runBlockEvents` (:409). The phases before them (the world
-    /// border, the weather and the clock, :365-388; the raids, :402) sit
-    /// inside the span in vanilla but run before the bracket here: none of
-    /// them runs a `neighborChanged` a piston could read, so the answers stay
-    /// vanilla's. The entities (:423-453) and the block entities (:455) tick
-    /// below :412, outside it — there the flag is down, as in vanilla, and a
-    /// moving piston finishing in that pass still asks for event 1.
+    /// `ServerLevel.runBlockEvents` (:409). The entities (:423-453) and the
+    /// block entities (:455) tick below :412, outside it — there the flag is
+    /// down, as in vanilla, and a moving piston finishing in that pass still
+    /// asks for event 1.
+    ///
+    /// The phases vanilla runs above :394 sit inside its span but before the
+    /// bracket here, so they see the flag down: the world border and the
+    /// weather (:365-369), the raids (:402), and `tickTime` (:387), whose
+    /// scheduled events (:485) run a data pack's function, which can set a
+    /// block. A piston that loses its signal from one of them still asks for
+    /// event 1 where vanilla asks for 2: a gap left open here, and one that
+    /// was open before this flag spanned the block phases at all.
     ///
     /// Raise it once per level tick, not per phase: a piston that loses its
     /// signal in any phase of the span answers `PistonBaseBlock.checkIfExtend`

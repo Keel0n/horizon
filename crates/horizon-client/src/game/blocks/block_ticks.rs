@@ -264,9 +264,11 @@ impl Game<'_> {
         // ticks already run) are inside the same span in vanilla too.
         //
         // The phases vanilla runs above :394 but before the bracket here (the
-        // world border, the weather and the clock, :365-388; the raids, :402)
-        // run with the flag down: none of them reaches a block's neighbour
-        // change, so no piston reads it there.
+        // world border, the weather and the clock, `tickTime` with its
+        // scheduled data pack functions, :365-388 and :485; the raids, :402)
+        // run with the flag down: a function that sets a block there still
+        // reaches a piston with event 1 where vanilla answers 2 (see
+        // `Ticks::begin_handling_tick`, which names the gap).
         //
         // The entity sweep above is the tick's entity pass in vanilla
         // (:423-453), moved here to run before the blocks it presses; it
