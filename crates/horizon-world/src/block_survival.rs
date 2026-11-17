@@ -1290,3 +1290,500 @@ mod rule_or_skip_tests {
         assert!(matches!(good.unwrap(), Some(Rule::Always)));
     }
 }
+
+#[cfg(test)]
+mod part_hook_tests {
+    //! The survival table asks a block's parts before its own rule: `can_survive` of the
+    //! candidate, and `mayPlaceOn` of the plant whose ground rule the table holds (#17943).
+    use super::{
+        BlockSurvivalRegistry, SurvivalDefinitions, SurvivalError, SurvivalRule, SurvivalWorld,
+    };
+    use crate::{
+        block_collision::{BlockCollisionRegistry, DynamicCollisionWorld, ShulkerCollisionState},
+        block_properties::BlockPropertiesRegistry,
+        block_support::BlockSupportRegistry,
+        collision::CachedCollisionRegistry,
+        dynamic_support::DynamicSupportWorld,
+        fluid::FluidState,
+        native_worldgen_hooks::{self, NativeWorldgenHooks},
+        registry::{BlockRegistry, BlockStateId},
+    };
+    use horizon_core::{geometry::VoxelShape, nbt::Tag};
+    use std::{
+        collections::BTreeMap,
+        io,
+        sync::{
+            Mutex, OnceLock, PoisonError,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    /// The table's blocks in id order: air, the two grounds the vegetation tag holds and
+    /// the crops tag does not, the crop and the plant the two rules belong to, and a mod
+    /// block no rule in the table covers.
+    const NAMES: [&str; 7] = [
+        "minecraft:air",
+        "minecraft:grass_block",
+        "minecraft:sand",
+        "minecraft:farmland",
+        "minecraft:wheat",
+        "minecraft:short_grass",
+        "mymod:crystal",
+    ];
+    const AIR: BlockStateId = BlockStateId(0);
+    const GRASS: BlockStateId = BlockStateId(1);
+    const SAND: BlockStateId = BlockStateId(2);
+    const FARMLAND: BlockStateId = BlockStateId(3);
+    const WHEAT: BlockStateId = BlockStateId(4);
+    const SHORT_GRASS: BlockStateId = BlockStateId(5);
+    const CRYSTAL: BlockStateId = BlockStateId(6);
+    /// Where a plant stands and where the ground under it is: somewhere no other test of
+    /// this binary reads, so an answer set here reaches no other test's query.
+    const PLANT: [i32; 3] = [7, 70, 7];
+    const GROUND: [i32; 3] = [7, 69, 7];
+
+    /// The blocks, defaulted and stateless, as the game's registry describes them.
+    fn registry() -> &'static BlockRegistry {
+        let states = NAMES
+            .iter()
+            .map(|name| Tag::String((*name).into()))
+            .collect::<Vec<_>>();
+        let defaults = NAMES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (*name, Tag::Int(id as i32)));
+        Box::leak(Box::new(
+            BlockRegistry::from_nbt(&Tag::compound([
+                ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+                ("states", Tag::List(states)),
+                ("defaults", Tag::compound(defaults)),
+            ]))
+            .unwrap(),
+        ))
+    }
+
+    /// A collision table of one empty shape for every state, and — with `kind` — the
+    /// support table that carries the same table under its own kind.
+    fn shapes_tag(registry: &BlockRegistry, kind: Option<&str>) -> Tag {
+        let states = (0..registry.len())
+            .map(|id| {
+                let state = registry
+                    .state(BlockStateId(id as u32))
+                    .expect("registry index is in bounds");
+                Tag::String(state.name.as_str().into())
+            })
+            .collect::<Vec<_>>();
+        let empty = Tag::compound([
+            ("x", Tag::LongArray(vec![0])),
+            ("y", Tag::LongArray(vec![0])),
+            ("z", Tag::LongArray(vec![0])),
+            ("occupied", Tag::ByteArray(Vec::new())),
+            ("cube", Tag::Byte(0)),
+            ("cube_axes", Tag::Byte(0)),
+            ("discrete_min", Tag::IntArray(vec![0; 3])),
+            ("discrete_max", Tag::IntArray(vec![0; 3])),
+        ]);
+        let mut tag = Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            ("states", Tag::List(states)),
+            ("shapes", Tag::List(vec![empty])),
+            ("cached_shapes", Tag::IntArray(vec![0; registry.len()])),
+        ]);
+        if let Some(kind) = kind
+            && let Tag::Compound(entries) = &mut tag
+        {
+            entries.insert("Kind".into(), Tag::String(kind.into()));
+        }
+        tag
+    }
+
+    /// The property table beside the collision shapes: no block is solid, liquid or
+    /// replaceable in it, which these rules never ask about.
+    fn properties_tag(occlusion: Tag) -> Tag {
+        let blocks = NAMES.iter().map(|name| (*name, Tag::Byte(0)));
+        Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            (
+                "states",
+                occlusion
+                    .get("states")
+                    .expect("the shapes carry their state identities")
+                    .clone(),
+            ),
+            ("blocks", Tag::compound(blocks)),
+            ("occlusion", occlusion),
+        ])
+    }
+
+    /// The tags the table's two rules bind: the vegetation ground short grass stands on
+    /// and the crops' farmland.
+    fn tags() -> BTreeMap<String, Vec<String>> {
+        BTreeMap::from([
+            (
+                "minecraft:supports_vegetation".to_owned(),
+                vec!["minecraft:grass_block".to_owned()],
+            ),
+            (
+                "minecraft:supports_crops".to_owned(),
+                vec!["minecraft:farmland".to_owned()],
+            ),
+        ])
+    }
+
+    /// The table under test: short grass stands on the vegetation tag, wheat on the
+    /// crops' one, and the mod block has no rule at all.
+    fn survival(tags: &BTreeMap<String, Vec<String>>) -> BlockSurvivalRegistry<'static> {
+        let registry = registry();
+        let collisions = CachedCollisionRegistry::from_nbt(&shapes_tag(registry, None), registry)
+            .expect("collision table");
+        let properties = BlockPropertiesRegistry::from_nbt(
+            &properties_tag(shapes_tag(registry, None)),
+            &collisions,
+        )
+        .expect("property table");
+        let properties: &'static BlockPropertiesRegistry<'static> = Box::leak(Box::new(properties));
+        let support =
+            BlockSupportRegistry::from_nbt(&shapes_tag(registry, Some("block_support")), registry)
+                .expect("support table");
+        let definitions = SurvivalDefinitions {
+            rules: BTreeMap::from([
+                (
+                    "minecraft:short_grass".to_owned(),
+                    SurvivalRule::TagBelow("minecraft:supports_vegetation".to_owned()),
+                ),
+                ("minecraft:wheat".to_owned(), SurvivalRule::Crop),
+            ]),
+            ..Default::default()
+        };
+        BlockSurvivalRegistry::new(
+            registry,
+            properties,
+            std::sync::Arc::new(support),
+            std::sync::Arc::new(
+                BlockCollisionRegistry::new(std::sync::Arc::new(collisions))
+                    .expect("collision registry"),
+            ),
+            &definitions,
+            tags,
+            &BTreeMap::new(),
+        )
+        .expect("survival table")
+    }
+
+    /// A level of named blocks under daylight and no fluids: `Rule::Crop` reads the light
+    /// at the plant, which daylight gives it.
+    struct TestWorld {
+        blocks: BTreeMap<[i32; 3], BlockStateId>,
+        light: i32,
+    }
+    impl TestWorld {
+        /// A world with the plant at [`PLANT`] and its ground at [`GROUND`].
+        fn new(plant: BlockStateId, ground: BlockStateId) -> Self {
+            Self {
+                blocks: BTreeMap::from([(PLANT, plant), (GROUND, ground)]),
+                light: 15,
+            }
+        }
+    }
+    impl DynamicSupportWorld for TestWorld {
+        type Error = io::Error;
+        fn shulker_is_closed(&mut self, _: [i32; 3]) -> io::Result<Option<bool>> {
+            Ok(None)
+        }
+        fn moving_piston_shape(&mut self, _: [i32; 3]) -> io::Result<Option<VoxelShape>> {
+            Ok(None)
+        }
+    }
+    impl DynamicCollisionWorld for TestWorld {
+        fn shulker_collision_state(
+            &mut self,
+            _: [i32; 3],
+        ) -> io::Result<Option<ShulkerCollisionState>> {
+            Ok(None)
+        }
+    }
+    impl SurvivalWorld for TestWorld {
+        fn block_state(&mut self, position: [i32; 3]) -> io::Result<BlockStateId> {
+            Ok(*self.blocks.get(&position).unwrap_or(&AIR))
+        }
+        fn fluid_state(&mut self, _: [i32; 3]) -> io::Result<FluidState> {
+            Ok(FluidState::EMPTY)
+        }
+        fn raw_brightness(&mut self, _: [i32; 3], _: i32) -> io::Result<i32> {
+            Ok(self.light)
+        }
+    }
+
+    /// The table's own answer for the plant at [`PLANT`].
+    fn survives(
+        survival: &BlockSurvivalRegistry<'_>,
+        world: &mut TestWorld,
+        plant: BlockStateId,
+    ) -> bool {
+        survival
+            .can_survive(world, plant, PLANT)
+            .expect("the table answers for this plant")
+    }
+
+    /// What the installed hooks answer while one test asks: the state (and, for
+    /// `may_place_on`, the ground state) and the position that answer belongs to. A query
+    /// from any other test in this binary — they run on many threads at once — matches no
+    /// switch and gets no answer at all.
+    #[derive(Clone, Copy)]
+    struct Asked {
+        state: BlockStateId,
+        ground: Option<BlockStateId>,
+        at: [i32; 3],
+        answer: Option<bool>,
+    }
+    static SURVIVES: Mutex<Option<Asked>> = Mutex::new(None);
+    static PLACE_ON: Mutex<Option<Asked>> = Mutex::new(None);
+    /// How many times a switch was consulted and matched.
+    static ASKS: AtomicUsize = AtomicUsize::new(0);
+    /// Held by a test that turns a switch on for its whole run, so no two ever do.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// The answer one switch holds for this query, if it is the query it names.
+    fn asked(
+        switch: &Mutex<Option<Asked>>,
+        state: BlockStateId,
+        ground: Option<BlockStateId>,
+        at: [i32; 3],
+    ) -> Option<Option<bool>> {
+        let asked = (*switch.lock().unwrap_or_else(PoisonError::into_inner))?;
+        if asked.state != state || asked.ground != ground || asked.at != at {
+            return None;
+        }
+        ASKS.fetch_add(1, Ordering::SeqCst);
+        Some(asked.answer)
+    }
+    fn hook_can_survive(state: BlockStateId, position: [i32; 3], survives: &mut Option<bool>) {
+        if let Some(answer) = asked(&SURVIVES, state, None, position) {
+            *survives = answer;
+        }
+    }
+    fn hook_may_place_on(
+        state: BlockStateId,
+        ground: BlockStateId,
+        ground_position: [i32; 3],
+        may: &mut Option<bool>,
+    ) {
+        if let Some(answer) = asked(&PLACE_ON, state, Some(ground), ground_position) {
+            *may = answer;
+        }
+    }
+
+    /// Installs the callbacks once for this test binary; every other test's query matches
+    /// no switch, so it sees the answers it would see with no hooks installed.
+    fn install_hooks() {
+        static INSTALL: OnceLock<()> = OnceLock::new();
+        INSTALL.get_or_init(|| {
+            let installed = native_worldgen_hooks::install(NativeWorldgenHooks {
+                alter_ground: |_, _| {},
+                on_tree_grow: |_, _| None,
+                rotate: |_, _, _, table| table,
+                can_survive: hook_can_survive,
+                may_place_on: hook_may_place_on,
+                feature: |place| place(),
+            });
+            assert!(
+                installed.is_ok(),
+                "this test installs the worldgen hooks first"
+            );
+        });
+    }
+
+    fn set(switch: &Mutex<Option<Asked>>, answer: Option<Asked>) {
+        *switch.lock().unwrap_or_else(PoisonError::into_inner) = answer;
+    }
+
+    /// Runs `f` with one switch set, then clears it, so the rest of the binary keeps the
+    /// answers it would get without these hooks.
+    fn answers<R>(switch: &Mutex<Option<Asked>>, ask: Asked, f: impl FnOnce() -> R) -> R {
+        set(switch, Some(ask));
+        let result = f();
+        set(switch, None);
+        result
+    }
+
+    /// The table asks a part's `canSurvive` before its own rule, so the part's answer
+    /// replaces it — for a vanilla plant whose rule the table holds, and for a mod block
+    /// the table has no rule for at all, which the rule alone reports `Unsupported`.
+    #[test]
+    fn the_table_asks_a_blocks_can_survive_before_its_rule() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        // The rule alone: short grass stands on grass, not on sand.
+        assert!(survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, GRASS),
+            SHORT_GRASS
+        ));
+        assert!(!survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, SAND),
+            SHORT_GRASS
+        ));
+
+        // A part's no replaces the rule's yes, and a part's yes its no.
+        let refuse = Asked {
+            state: SHORT_GRASS,
+            ground: None,
+            at: PLANT,
+            answer: Some(false),
+        };
+        assert!(!answers(&SURVIVES, refuse, || survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, GRASS),
+            SHORT_GRASS
+        )));
+        let allow = Asked {
+            state: SHORT_GRASS,
+            ground: None,
+            at: PLANT,
+            answer: Some(true),
+        };
+        assert!(answers(&SURVIVES, allow, || survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, SAND),
+            SHORT_GRASS
+        )));
+
+        // A block the table holds no rule for is answered by its parts alone: the ask
+        // comes before the rule the table does not have.
+        let mut world = TestWorld::new(CRYSTAL, SAND);
+        assert!(matches!(
+            survival.can_survive(&mut world, CRYSTAL, PLANT),
+            Err(SurvivalError::Unsupported(state)) if state == CRYSTAL
+        ));
+        let allow = Asked {
+            state: CRYSTAL,
+            ground: None,
+            at: PLANT,
+            answer: Some(true),
+        };
+        assert!(answers(&SURVIVES, allow, || survives(
+            &survival,
+            &mut TestWorld::new(CRYSTAL, SAND),
+            CRYSTAL
+        )));
+        let refuse = Asked {
+            state: CRYSTAL,
+            ground: None,
+            at: PLANT,
+            answer: Some(false),
+        };
+        assert!(!answers(&SURVIVES, refuse, || survives(
+            &survival,
+            &mut TestWorld::new(CRYSTAL, SAND),
+            CRYSTAL
+        )));
+
+        // A part asked whose answer stays empty leaves the rule's answer, and it was asked.
+        let before = ASKS.load(Ordering::SeqCst);
+        let silent = Asked {
+            state: SHORT_GRASS,
+            ground: None,
+            at: PLANT,
+            answer: None,
+        };
+        assert!(answers(&SURVIVES, silent, || survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, GRASS),
+            SHORT_GRASS
+        )));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before + 1,
+            "the table asked the parts"
+        );
+    }
+
+    /// The plant's own ground rule asks the parts of the plant's block about the ground
+    /// under it, with the ground's own position, and their answer replaces the table's
+    /// tag — in the crop rule and in the vegetation one, which the vanilla states that
+    /// own those branches read.
+    #[test]
+    fn the_plant_rule_asks_parts_about_the_ground() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        // The table alone: wheat and short grass stand on their tag's ground, not on sand.
+        assert!(survives(
+            &survival,
+            &mut TestWorld::new(WHEAT, FARMLAND),
+            WHEAT
+        ));
+        assert!(!survives(
+            &survival,
+            &mut TestWorld::new(WHEAT, SAND),
+            WHEAT
+        ));
+        assert!(!survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, SAND),
+            SHORT_GRASS
+        ));
+
+        // A part's yes on ground outside the tag replaces the crop rule...
+        let allow = Asked {
+            state: WHEAT,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers(&PLACE_ON, allow, || survives(
+            &survival,
+            &mut TestWorld::new(WHEAT, SAND),
+            WHEAT
+        )));
+        // ... and the vegetation rule, which the answer names by the plant it stands for.
+        let allow = Asked {
+            state: SHORT_GRASS,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers(&PLACE_ON, allow, || survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, SAND),
+            SHORT_GRASS
+        )));
+        // A part's no on ground inside the tag replaces it the other way.
+        let refuse = Asked {
+            state: WHEAT,
+            ground: Some(FARMLAND),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(!answers(&PLACE_ON, refuse, || survives(
+            &survival,
+            &mut TestWorld::new(WHEAT, FARMLAND),
+            WHEAT
+        )));
+
+        // A part asked whose answer stays empty leaves the tag's answer, and it was asked.
+        let before = ASKS.load(Ordering::SeqCst);
+        let silent = Asked {
+            state: WHEAT,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: None,
+        };
+        assert!(!answers(&PLACE_ON, silent, || survives(
+            &survival,
+            &mut TestWorld::new(WHEAT, SAND),
+            WHEAT
+        )));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before + 1,
+            "the table asked the parts"
+        );
+    }
+}
