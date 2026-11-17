@@ -886,8 +886,9 @@ mod controller_tests {
     /// ride it does steer keeps the move its client sent for the mount
     /// (#17092). The game is built from the prepared vanilla data
     /// `test_fixtures::vanilla` reads — `HORIZON_TEST_RESOURCES`, else the
-    /// checkout's `.local` — and a job with neither skips this one.
+    /// checkout's `.local` — so it runs in the daily prepared-resource tier.
     #[test]
+    #[ignore = "daily"]
     fn a_mount_nobody_steers_carries_its_rider_with_its_own_move() {
         let root = std::env::var_os("HORIZON_TEST_RESOURCES")
             .map(std::path::PathBuf::from)
@@ -1028,9 +1029,10 @@ mod controller_tests {
     /// `Entity.getKnownSpeed`), the one the driver's client sent, and not the
     /// nothing a rider sends of its own (#17092). The game is built from the
     /// prepared vanilla data `test_fixtures::vanilla` reads —
-    /// `HORIZON_TEST_RESOURCES`, else the checkout's `.local` — and a job with
-    /// neither skips this one.
+    /// `HORIZON_TEST_RESOURCES`, else the checkout's `.local` — so it runs in
+    /// the daily prepared-resource tier.
     #[test]
+    #[ignore = "daily"]
     fn a_second_seats_charge_carries_the_boats_move() {
         let root = std::env::var_os("HORIZON_TEST_RESOURCES")
             .map(std::path::PathBuf::from)
