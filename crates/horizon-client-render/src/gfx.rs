@@ -497,6 +497,7 @@ pub mod panorama;
 mod readback;
 mod resident;
 mod reuse;
+mod rt;
 mod screenshot;
 pub use screenshot::{PendingScreenshot, ScreenshotSave};
 mod screenshot_readback;
@@ -1367,8 +1368,8 @@ pub struct Renderer {
     /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
     /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
     packed_quads: bool,
-    /// The terrain's acceleration structures, with ray tracing on (`ray_scene`).
-    ray_scene: Option<surface_setup::ray_query::ray_scene::RayScene>,
+    /// The terrain's acceleration structures, with ray tracing on (`rt::scene`).
+    ray_scene: Option<rt::scene::RayScene>,
     /// The compact layout is allowed (`HORIZON_PACKED_QUADS`, `set_packed_layout`).
     packed_on: bool,
     /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
@@ -1705,6 +1706,8 @@ pub struct Renderer {
     pack_loading: Option<PackLoading>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
     native: Option<native_pack::NativePack>,
+    /// What it does in the renderer's place, kept from its install on (`replace_native`).
+    executor: Option<external::Capabilities>,
     /// Time the shader pack's passes on the GPU (F3, or a capture made with `--gpu`).
     pass_timing: bool,
     /// Times the parts of passes too (`set_pass_detail`).
@@ -2927,7 +2930,8 @@ impl Renderer {
                                 let mut data =
                                     data[start..start + used as usize * layer_bytes].to_vec();
                                 data.resize(layer_bytes * count as usize, 0);
-                                device.create_texture_with_data(
+                                upload::create_texture_with_data(
+                                    &device,
                                     &queue,
                                     &wgpu::TextureDescriptor {
                                         label: Some(label),
@@ -2945,7 +2949,6 @@ impl Renderer {
                                             | wgpu::TextureUsages::COPY_DST,
                                         view_formats: &[],
                                     },
-                                    wgpu::util::TextureDataOrder::LayerMajor,
                                     &data,
                                 )
                             },
@@ -2964,7 +2967,8 @@ impl Renderer {
                 // The extra layers are empty.
                 mips.resize(mips.len() / used as usize * count as usize, 0);
                 mip_levels = levels;
-                device.create_texture_with_data(
+                upload::create_texture_with_data(
+                    &device,
                     &queue,
                     &wgpu::TextureDescriptor {
                         label: Some("Block sprites"),
@@ -2984,7 +2988,6 @@ impl Renderer {
                             | wgpu::TextureUsages::STORAGE_BINDING,
                         view_formats: &[],
                     },
-                    wgpu::util::TextureDataOrder::LayerMajor,
                     &mips,
                 )
             })
@@ -3145,7 +3148,8 @@ impl Renderer {
             )
             .into());
         }
-        let atlas = device.create_texture_with_data(
+        let atlas = upload::create_texture_with_data(
+            &device,
             &queue,
             &wgpu::TextureDescriptor {
                 label: Some("Shared atlas"),
@@ -3164,7 +3168,6 @@ impl Renderer {
                     | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             },
-            wgpu::util::TextureDataOrder::LayerMajor,
             atlas_pixels,
         );
         let atlas_view = atlas.create_view(&Default::default());
@@ -4295,7 +4298,7 @@ impl Renderer {
             last_wait: std::time::Duration::ZERO,
             last_encode: std::time::Duration::ZERO,
             window,
-            ray_scene: surface_setup::ray_query::ray_scene::RayScene::forced(&device),
+            ray_scene: rt::scene::RayScene::forced(&device),
             device,
             reuse,
             queue: submit::Queue::new(queue, submit::wanted()),
@@ -4510,6 +4513,7 @@ impl Renderer {
             pack_post: None,
             pack_loading: None,
             native: None,
+            executor: None,
             pass_timing: false,
             pass_detail: false,
             pass_timing_gap: std::time::Duration::ZERO,
@@ -4672,7 +4676,7 @@ impl Renderer {
     /// The terrain's `quads` quad indices: `None` when the device would not make the
     /// buffer, a lost or full one (#15464).
     fn quad_indices(device: &wgpu::Device, quads: u32) -> Option<wgpu::Buffer> {
-        surface_setup::ray_query::quad_indices(device, quads)
+        rt::query::quad_indices(device, quads)
     }
     fn offscreen_target(
         device: &wgpu::Device,
@@ -4833,7 +4837,7 @@ impl Renderer {
     /// Whether one of Horizon's own packs reads the water mirror, which needs the frame's
     /// `water_plane`.
     pub fn wants_water_plane(&self) -> bool {
-        self.native.as_ref().is_some_and(|n| n.frame.reflects)
+        self.executor.is_some_and(|c| c.reflection)
     }
     /// Whether solid quads facing away from the eye are left out.
     pub fn section_sides(&self) -> bool {
@@ -5024,7 +5028,7 @@ impl Renderer {
     /// Whether one of Horizon's own packs with `[shadow]` draws, whose shadow pass takes the
     /// frame's `shadow_only` quads.
     pub fn native_shadow(&self) -> bool {
-        self.native.as_ref().is_some_and(|n| n.shadow.is_some())
+        self.executor.is_some_and(|c| c.shadow)
     }
     /// What a shader pack's shadow pass draws of the entities this frame: (entities or block
     /// entities other than the player, so those Horizon's culling hides from the camera are
@@ -6063,7 +6067,7 @@ impl Renderer {
                 self.frame_gen.on,
                 (self.pack_post.as_ref())
                     .map(|(_, p)| p.as_ref().is_some_and(|p| p.skins_entities())),
-                self.native.is_some(),
+                self.executor.is_some(),
                 || native_render::needs().entity_spans,
             )
     }
@@ -6239,7 +6243,7 @@ impl Renderer {
     /// The running shader pack's kind: `iris` (a `shaders/` pack) or `native` (one of
     /// Horizon's own).
     pub fn shader_pack_kind(&self) -> Option<&'static str> {
-        match (&self.pack_post, &self.native) {
+        match (&self.pack_post, self.executor) {
             (Some((_, Some(_))), _) => Some("iris"),
             (_, Some(_)) => Some("native"),
             _ => None,
@@ -7092,7 +7096,7 @@ impl Renderer {
             && !frame.title
             && frame.menu_blur.is_none()
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
-            && self.native.is_none()
+            && self.executor.is_none()
             && (self.surface.is_none()
                 || self.config.usage.contains(wgpu::TextureUsages::COPY_DST));
         if !fg {
@@ -7230,7 +7234,7 @@ impl Renderer {
         // TAA runs where the world post pass does, not under a shader pack's own.
         let taa = !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
-            && self.native.is_none();
+            && self.executor.is_none();
         let hdr_lighting = self.shader_pack_kind().is_none();
         if let Some(hdr) = &mut self.hdr {
             hdr.lighting = hdr_lighting && hdr.look;
@@ -7469,9 +7473,7 @@ impl Renderer {
             .and_then(|p| p.shadow_view(frame))
             .or_else(|| {
                 // One of Horizon's own packs with `[shadow]` uses the same lists.
-                let native = self.native.as_ref().filter(|_| !frame.title)?;
-                native.shadow.as_ref()?;
-                native.frame.shadow_view(frame)
+                (self.native.as_ref().filter(|_| !frame.title)?).shadow_request(frame)
             })
             .or_else(|| {
                 self.external
@@ -7509,10 +7511,7 @@ impl Renderer {
         // `visible`. Decided before the walk, so that a pass whose buffers no longer fit can
         // still switch GPU culling off.
         let radius = (frame.detail_distance / 16.0) as i32;
-        let displaced = self
-            .native
-            .as_ref()
-            .is_some_and(native_pack::NativePack::displaces);
+        let displaced = self.executor.is_some_and(|c| c.displacement);
         let mut gpu_frame = self.gpu_culling.is_some()
             && !frame.title
             && !pack_terrain
@@ -8429,7 +8428,7 @@ impl Renderer {
             - native_solid_quads
             - native_cutout_quads
             - native_cutout_mipped_quads;
-        let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
+        let native_clouds = self.executor.is_none_or(|c| !c.hides_clouds);
         let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
@@ -8848,7 +8847,7 @@ impl Renderer {
                 flat.page_instances = self.visbuf.is_some()
                     && !pack_terrain
                     && shadow_view.is_none()
-                    && self.native.as_ref().is_none_or(|n| n.material.is_none());
+                    && self.executor.is_none_or(|c| !c.material);
                 let sections = &self.sections;
                 let lods = &self.lods;
                 let (sorted, lists) = (&self.sorted_indices, &self.world_views.sections);
@@ -8934,7 +8933,7 @@ impl Renderer {
         // The world's targets: the screen, or the scaled target of `post`.
         let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
         // One of Horizon's own packs reads the same world target.
-        let native_post = !frame.title && self.native.is_some();
+        let native_post = !frame.title && self.executor.is_some();
         self.set_up_pack_timing();
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
@@ -9281,7 +9280,7 @@ impl Renderer {
         // its layers, and the entities with its pipelines, which read the pack's frame at group 3.
         let native = self.native.as_ref().filter(|_| !frame.title);
         let material = native.and_then(native_pack::NativePack::terrain_layers);
-        let entity_stage = native.and_then(|n| Some((n.entity.as_ref()?, &n.frame.group)));
+        let entity_stage = native.and_then(|n| n.entities());
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
         let solid_pipeline = material.map_or(self.solid.get(hdr), |m| m.solid);
@@ -9417,7 +9416,9 @@ impl Renderer {
                     if frame.end_sky {
                         self.end_sky.draw(&mut pass);
                         // The End's custom sky layers go over its sky box.
-                        if self.custom_sky.is_drawing() && !pack_draws_sky && self.native.is_none()
+                        if self.custom_sky.is_drawing()
+                            && !pack_draws_sky
+                            && self.executor.is_none()
                         {
                             self.custom_sky.draw(&mut pass);
                             pass.set_pipeline(&self.celestial.added);
@@ -9427,11 +9428,7 @@ impl Renderer {
                     if celestial_vertices > 0 && !pack_draws_celestial {
                         // The Overworld's bodies start with the sun's quad
                         // (`Game::celestial_geometry`): a pack sky drawing its own skips it.
-                        let own_sun = !frame.end_sky
-                            && self
-                                .native
-                                .as_ref()
-                                .is_some_and(native_pack::NativePack::hides_sun);
+                        let own_sun = !frame.end_sky && self.executor.is_some_and(|c| c.hides_sun);
                         let first = if own_sun { 6 } else { 0 };
                         // A resource pack's core/sky isn't vanilla's sky times the sky's
                         // lift, which the sun's disc pass assumes: today's add there.
@@ -9444,10 +9441,7 @@ impl Renderer {
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                 }
-                let own_stars = self
-                    .native
-                    .as_ref()
-                    .is_some_and(native_pack::NativePack::hides_stars);
+                let own_stars = self.executor.is_some_and(|c| c.hides_stars);
                 if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
                     match self.core_sky.as_ref().filter(|c| c.draws_stars()) {
                         Some(core) => core.draw_stars(&mut pass),
@@ -11003,7 +10997,7 @@ impl Renderer {
         }
         // The layered frame's light eases into the peak, before the camera overlays draw on it,
         // unless a 0.2 pack's own `[tonemap]` did.
-        let pack_tonemap = self.native.as_ref().is_some_and(|n| n.tonemaps());
+        let pack_tonemap = self.executor.is_some_and(|c| c.tone_curve);
         if horizon_tone_curve(layered, !frame.title, pack_tonemap)
             && let Some(hdr) = &self.hdr
         {
@@ -12097,7 +12091,7 @@ mod tests {
                 // occlusion test is appended to gpu_culling.wgsl, on Vulkan alone.
                 continue;
             } else if name == "rt_unpack.wgsl" {
-                // Appended to terrain.wgsl (`ray_scene`'s `Unpacker`), on ray tracing devices.
+                // Appended to terrain.wgsl (`rt::scene`'s `Unpacker`), on ray tracing devices.
                 continue;
             } else if name == "terrain.wgsl"
                 || name == "entity.wgsl"
