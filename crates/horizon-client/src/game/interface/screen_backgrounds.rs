@@ -130,9 +130,13 @@ impl Game<'_> {
         partial: f32,
     ) -> Option<horizon_client::gfx::BorderDraw> {
         use horizon_client::border_render::{self, BorderRenderer};
-        // The wall and its gradient span vanilla's full-detail length, not the
-        // longer distance far terrain draws: see [`border_spans`].
-        let (distance, depth_far) = border_spans(self.streaming.radius, self.settings.cloud_range);
+        // The wall and its fade span the full-detail radius, as vanilla's
+        // `LevelRenderer` and `Camera` derive them, never the far-terrain LOD
+        // distance: the wall's texture coordinates are f32, and at LOD depths
+        // one ulp of the v coordinate is wider than a whole texture tile, so
+        // the forcefield striping collapses into moiré. The wall therefore
+        // ends inside the world far terrain draws, before its fog.
+        let distance = f64::from(self.streaming.radius * 16);
         border_render::extract(
             &self.border,
             partial,
@@ -147,9 +151,9 @@ impl Game<'_> {
             self.border_renderer.invalidate();
             self.border_section = Some(section);
         }
-        // `Camera.depthFar` caps the wall's height; at the vanilla length the
-        // wall ends inside the world far terrain draws, before its fog — the
-        // compromise `border_spans` documents.
+        // `Camera.depthFar`, from the same radius, caps the wall's height.
+        let depth_far =
+            horizon_client::camera::depth_far(self.streaming.radius, self.settings.cloud_range);
         if !self
             .border_renderer
             .prepare(&self.border_state, camera, distance, depth_far)
@@ -165,38 +169,6 @@ impl Game<'_> {
                 .transforms(&self.border_state, camera, millis),
             sides: BorderRenderer::sides(&self.border_state, camera, distance),
         })
-    }
-}
-
-/// The world border wall's span: how far the wall and its fade reach
-/// (`LevelRenderer`'s `optionsRenderState.renderDistance * 16`, full detail's
-/// radius) and the far plane that caps its height (`Camera.depthFar`).
-///
-/// Never the far-terrain LOD distance that lengthens the drawn world: the
-/// wall's texture coordinates are f32, and at LOD depths the v coordinate
-/// spans tens of millions of blocks, where one ulp is larger than a whole
-/// texture tile and the forcefield striping collapses into moiré. The wall
-/// keeps vanilla's length instead and ends before the far-terrain fog — an
-/// easier loss than a wall the f32 UVs cannot texture.
-fn border_spans(radius: i32, cloud_range: i32) -> (f64, f32) {
-    (
-        f64::from(radius * 16),
-        horizon_client::camera::depth_far(radius, cloud_range),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::border_spans;
-
-    /// The wall spans full detail's radius (`LevelRenderer`'s render distance
-    /// and `Camera.depthFar`), never the LOD distance that far terrain adds.
-    #[test]
-    fn the_wall_spans_full_detail_not_the_lod_distance() {
-        assert_eq!(border_spans(128, 32), (2048.0, 8192.0));
-        assert_eq!(border_spans(2, 128), (32.0, 2048.0));
-        assert_eq!(border_spans(12, 12), (192.0, 768.0));
-        assert_eq!(border_spans(32, 32), (512.0, 2048.0));
     }
 }
 
