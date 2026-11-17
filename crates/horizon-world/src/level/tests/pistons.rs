@@ -542,6 +542,7 @@ fn a_piston_dropping_its_signal_inside_a_block_event_asks_for_event_two() {
             chunk != self.held
         }
     }
+    impl crate::level::BlockEntityNeighbors for Held<'_> {}
     let mut w = world!();
     let piston = w.id("piston", &[("facing", "east")]);
     let redstone = w.id("redstone_block", &[]);
