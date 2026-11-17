@@ -681,6 +681,10 @@ fn a_piston_dropping_its_signal_in_the_block_entity_pass_asks_for_event_one() {
     w.level.time = 40;
     assert_eq!(w.ticks.block_events.len(), 0, "nothing queued yet");
     let b = w.b();
+    // The level tick's block phases, which open and close `handlingTick` with
+    // nothing due here (ServerLevel.java:360-412): they leave the world as it
+    // was, so the pass below starts outside the span.
+    b.tick_level_blocks(&mut w.level, &mut w.ticks);
     // `Level.tickBlockEntities`, below the tick's `handlingTick`
     // (ServerLevel.java:412, :455).
     b.tick_block_entities(&mut w.level, &mut w.ticks);
