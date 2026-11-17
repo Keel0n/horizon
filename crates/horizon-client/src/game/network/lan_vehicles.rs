@@ -1412,7 +1412,7 @@ mod controller_tests {
     /// position of its own, only the vehicle's. `handleClientTickEnd` keeps it
     /// for that tick, and zeroes it without a move.
     #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_guests_horse_move_is_its_riders_known_movement() {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();

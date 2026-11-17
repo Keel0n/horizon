@@ -1,0 +1,3 @@
+# Prepared-resource test for mounted spear movement.
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+horizon-client game::lan_vehicles::controller_tests::a_guests_horse_move_is_its_riders_known_movement lib daily resources
