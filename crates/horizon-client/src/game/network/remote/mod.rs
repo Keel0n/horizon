@@ -6452,6 +6452,10 @@ impl Game<'_> {
                 passenger.passenger_block_effects_tick()?;
             }
         }
+        // Player.tick holds the player at the world's edge after the move: X
+        // and Z clamp, Y does not (Player.java:264-265).
+        player.position.x = player.position.x.clamp(-2.9999999E7, 2.9999999E7);
+        player.position.z = player.position.z.clamp(-2.9999999E7, 2.9999999E7);
         // The server decides fire the window cannot predict (blaze fireballs,
         // fire aspect, lightning): Entity.isOnFire reads the synched flag, so
         // the predicted tick's countdown must not end it while it is set.

@@ -303,3 +303,6 @@ fn movement_input_disabled_listener_keeps_vanilla_keys() {
 
 #[path = "local_rotation_tests.rs"]
 mod local_rotation_tests;
+
+#[path = "player_world_edge_tests.rs"]
+mod player_world_edge_tests;
