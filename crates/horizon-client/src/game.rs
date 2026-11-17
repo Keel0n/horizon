@@ -3012,7 +3012,7 @@ impl Game<'_> {
     }
     /// `BlockState.canSurvive(level, pos)` for `state` at `pos` in the level in
     /// place: the rule a placement checks before `level_set` (a sapling on
-    /// grass, a torch on a wall), with a mod block's own `native_can_survive`
+    /// grass, a torch on a wall), with a mod block's own `can_survive`
     /// hook. False for an invalid state, an unloaded or out-of-height
     /// position, and on a client.
     ///
