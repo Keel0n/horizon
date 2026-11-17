@@ -7,14 +7,18 @@
 //! `Player.stabAttack`). The hit's feedback (`onKineticHit`) reaches the
 //! players around as entity event 2. A left click jabs instead
 //! (`PiercingWeapon.attack`), which Lunge turns into a dash.
-use super::{Game, view_vector, lan_vehicles::ridden_known_movement};
+use super::{
+    Game,
+    lan_vehicles::{ridden_known_movement, vehicle_driver},
+    view_vector,
+};
 pub(super) use horizon_client::spear::hits_in_reach;
 use horizon_client::{
     attack_strength::delay,
     collisions::SceneCollisions,
     first_person::Hand,
     items::ItemStack,
-    mobs::Damage,
+    mobs::{Damage, equine},
     spear::{HIT_FEEDBACK_TICKS, Kinetic, REACH},
 };
 use horizon_core::{
@@ -56,18 +60,33 @@ impl Game<'_> {
     /// mount's (`handleMoveVehicle` → `handlePlayerKnownMovement`): a rider
     /// sends no position of its own, so a charge on horseback carries the
     /// horse's speed. A passenger that is not at the reins takes the move of
-    /// the one that is (`Entity.getKnownSpeed`), and the window's own player
-    /// follows its mount instead (`positionRider`). A vehicle no guest drives
-    /// keeps its own move unread here yet — `ridden_known_movement` says
-    /// which cases that leaves.
+    /// the one that is (`Entity.getKnownSpeed`), and a ride vanilla hands no
+    /// player the reins of takes the vehicle's own move of the tick, its
+    /// `lastKnownSpeed`: a mount nobody saddled, a pig or a strider whose
+    /// rider holds no stick, anything else `/ride` puts a player on — the mobs
+    /// `Game::mob_speed` reads. A vehicle `self.mobs` does not hold (a boat, a
+    /// minecart) keeps no such source here yet: `ridden_known_movement` says
+    /// which cases that leaves. The window's own player follows its mount
+    /// instead (`positionRider`).
     pub(super) fn known_player_movement(&self) -> Vec3 {
-        if let (Some(conn), Some(vehicle)) = (self.lan_acting, self.riding)
-            && let Some(movement) = self
+        if let (Some(conn), Some(vehicle)) = (self.lan_acting, self.riding) {
+            if let Some(movement) = self
                 .lan
                 .as_ref()
                 .and_then(|host| ridden_known_movement(&host.hub.guests, conn, vehicle))
-        {
-            return movement;
+            {
+                return movement;
+            }
+            // `Entity.getKnownSpeed` of a vehicle this guest does not hold the
+            // reins of, in vanilla's sense (`Entity.getControllingPassenger`:
+            // the first player at them, on a ride that player steers).
+            if let Some(i) = self.mobs.iter().position(|m| m.id == vehicle)
+                && let Some(host) = self.lan.as_ref()
+                && !(equine::controlled(&self.mobs[i])
+                    && vehicle_driver(&host.hub.guests, vehicle) == Some(conn))
+            {
+                return self.mob_speed(i).scale(1.0 / 20.0);
+            }
         }
         if self.lan_acting.is_some() {
             return self.known_movement;

@@ -763,22 +763,22 @@ pub(super) fn vehicle_driver(guests: &[Guest], vehicle: u32) -> Option<u32> {
         .map(|g| g.conn)
 }
 
-/// `ServerPlayer.getKnownMovement` of a rider that does not drive its
-/// vehicle: the vehicle's (`Entity.getKnownSpeed`), i.e. the move its
-/// controlling passenger's client sent for it (`handleMoveVehicle` →
-/// `handlePlayerKnownMovement`). `None` when `conn` is that passenger, or
+/// `ServerPlayer.getKnownMovement` of a rider whose vehicle one of the
+/// window's players drives: that driver's move (`Entity.getKnownSpeed`), the
+/// move its client sent for the vehicle (`handleMoveVehicle` →
+/// `handlePlayerKnownMovement`). `None` when `conn` is that driver itself, or
 /// rides nothing: then its own move is its known movement.
 ///
-/// That is vanilla's answer only while the one at the reins is one of the
-/// server's players, which is what [`vehicle_driver`] counts. A vehicle the
-/// window's own player drives, one nobody drives, and the ones vanilla never
-/// hands a controlling passenger — a minecart (`AbstractMinecart` has none),
-/// a pig or a strider without a carrot on a stick (`Pig.getControllingPassenger`,
-/// `Strider.getControllingPassenger`), a mount nobody saddled (`/ride`) —
-/// leave vanilla with `Entity.getKnownSpeed`'s own `lastKnownSpeed`: the
-/// vehicle's move per tick, which Horizon keeps no source for here. A guest in
-/// one of those still reads its own (zero), as it did before #17092; closing
-/// that needs the vehicle's per-tick delta, and is a task of its own.
+/// What [`vehicle_driver`] counts is the first of the server's players on the
+/// vehicle, which vanilla's `Entity.getControllingPassenger` is not whenever
+/// it hands no player the reins: a minecart (`AbstractMinecart` has none), a
+/// pig or a strider whose rider holds no carrot on a stick
+/// (`Pig.getControllingPassenger`, `Strider.getControllingPassenger`), a mount
+/// nobody saddled or anything else a `/ride` puts a player on. Vanilla reads
+/// `Entity.getKnownSpeed`'s own `lastKnownSpeed` there, the vehicle's move per
+/// tick, which the caller has to find: `Game::known_player_movement` reads a
+/// mob's with `Game::mob_speed` and keeps no source for a boat or a minecart
+/// yet.
 pub(super) fn ridden_known_movement(guests: &[Guest], conn: u32, vehicle: u32) -> Option<Vec3> {
     let driver = vehicle_driver(guests, vehicle).filter(|&driver| driver != conn)?;
     let [x, y, z] = guests.iter().find(|g| g.conn == driver)?.known_movement;
@@ -875,6 +875,131 @@ mod controller_tests {
             ridden_known_movement(&guests, 2, 9),
             None,
             "a passenger of another vehicle takes nothing from it"
+        );
+    }
+
+    /// `Game::known_player_movement` of a guest on a mob: a ride vanilla hands
+    /// no player the reins of — no saddle, no carrot on a stick, whatever a
+    /// `/ride` puts a player on — takes the mount's own move of the tick
+    /// (`ServerPlayer.getKnownSpeed` → `Entity.getKnownSpeed` →
+    /// `Entity.lastKnownSpeed`), where the rider carries nothing of its own; a
+    /// ride it does steer keeps the move its client sent for the mount
+    /// (#17092). The game is built from the prepared vanilla data
+    /// `test_fixtures::vanilla` reads — `HORIZON_TEST_RESOURCES`, else the
+    /// checkout's `.local` — and a job with neither skips this one.
+    #[test]
+    fn a_mount_nobody_steers_carries_its_rider_with_its_own_move() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-unsaddled-mount-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("summon minecraft:horse 4.5 200 4.5 {NoAI:1b,Tame:1b}"));
+        let horse = game.mobs[0].id;
+        // The move the horse made in the tick, `Entity.computeSpeed`'s
+        // `lastKnownSpeed`: from where it stood to where it stands now, a
+        // canter's 0.2 blocks a tick.
+        game.mobs[0].previous = Vec3::new(4.5, 200.0, 4.5);
+        game.mobs[0].position = Vec3::new(4.7, 200.0, 4.5);
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "unsaddled-mount-test".into(), 3)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 3,
+                integrated: false,
+                levels: Default::default(),
+                level_seeds: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut host = game.lan.take().unwrap();
+        let (mut rider, _) = guest_with_packets(2, 21);
+        (rider.vehicle, rider.vehicle_order) = (Some(horse), 1);
+        // The move such a rider's client sends for its mount when it does
+        // steer it (`handleMoveVehicle`).
+        rider.known_movement = [0.3, 0.0, 0.0];
+        host.hub.guests.push(rider);
+        game.lan = Some(host);
+        // Nobody steers an unsaddled horse (`AbstractHorse.getControllingPassenger`
+        // is null), so the charge carries the horse's own move.
+        let seen = game.as_guest(2, |g| g.known_player_movement()).unwrap();
+        assert!(
+            (seen.x - 0.2).abs() < 1.0e-9 && seen.y == 0.0 && seen.z == 0.0,
+            "a mount nobody steers charges with its own move: {seen:?}"
+        );
+        // Saddled, with its rider at the reins (`equine::controlled`): the move
+        // that rider's client sent, not the mount's.
+        game.mobs[0].extra.set_saddled(true);
+        game.mobs[0].rider = Some(horizon_client::mobs::equine::Rider {
+            client: true,
+            ..Default::default()
+        });
+        let seen = game.as_guest(2, |g| g.known_player_movement()).unwrap();
+        assert!(
+            (seen.x - 0.3).abs() < 1.0e-9 && seen.y == 0.0 && seen.z == 0.0,
+            "a rider at the reins charges with its own move: {seen:?}"
         );
     }
 
