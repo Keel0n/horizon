@@ -9028,10 +9028,7 @@ impl Renderer {
             &self.device,
             [self.config.width, self.config.height],
             pack_reads_world || fg,
-            // A `shaders/` pack's own copy stretches the world back to the window: the world
-            // renders at the Upscaling ratio's share of the window (#16757). Frame generation
-            // and native (0.2) packs read the world at TAA's sizes, as before.
-            pack_post.then_some(self.world_post.upscale),
+            pack_post,
         );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),

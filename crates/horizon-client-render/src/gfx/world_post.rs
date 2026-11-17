@@ -375,13 +375,14 @@ impl Post {
         self.taa_resources.is_some()
     }
 
-    /// The world's rendered size and the size it is shown at (TAA's history); a `shaders/`
-    /// pack's copy of the world (`pack_upscale`) instead stretches the smaller world back to
-    /// the window itself, as TAA never runs under it.
-    fn sizes(&self, window: [u32; 2], pack_upscale: Option<f32>) -> ([u32; 2], [u32; 2]) {
-        let upscale = pack_upscale
-            .or((self.taa_on).then_some(self.upscale))
-            .unwrap_or(1.0);
+    /// The world's rendered size and the size it is shown at (TAA's history), smaller by the
+    /// upscaling ratio `pack` renders it for (`prepare`).
+    fn sizes(&self, window: [u32; 2], pack: bool) -> ([u32; 2], [u32; 2]) {
+        let upscale = if pack || self.taa_on {
+            self.upscale
+        } else {
+            1.0
+        };
         self.sizes_with_upscale(window, upscale)
     }
 
@@ -390,9 +391,7 @@ impl Post {
     }
 
     /// The size a native (API 0.2) pack's world draws at: it always has a target (`prepare`'s
-    /// `always`) and TAA is off under it, so none of TAA's upscaling, whatever ran before it:
-    /// what the pack's frames get, before its first. A `shaders/` pack's world instead takes
-    /// the upscaling ratio `prepare` is given, its own copy stretching the picture back.
+    /// `always`) and TAA is off under it, so it gets TAA's sizes, not a `shaders/` pack's.
     pub(super) fn pack_render_size(&self, window: [u32; 2]) -> [u32; 2] {
         sizes(window, self.scale, 1.0).0
     }
@@ -412,7 +411,7 @@ impl Post {
             return Mat4::IDENTITY;
         }
         self.taa_frame = self.taa_frame.wrapping_add(1);
-        let (size, _) = self.sizes(window, None);
+        let (size, _) = self.sizes(window, false);
         // Halton (2, 3) over 8 frames per output pixel (FSR's count), in rendered
         // pixels around the centre.
         let phases = (8.0 * self.upscale * self.upscale).ceil() as u32;
@@ -448,15 +447,17 @@ impl Post {
     /// The world's colour and depth targets this frame, or `None` to draw
     /// it straight to the screen.
     /// `always`: a target even at scale 1 without anti-aliasing (a shader pack reads it).
-    /// `pack_upscale`: the Upscaling ratio while a `shaders/` pack reads the world, whose own
-    /// copy stretches the smaller picture back to the window — TAA never runs under it, so
-    /// none of its upscaling. `None`: the world keeps TAA's sizes, without one as before.
+    /// `pack`: a `shaders/` pack reads the world, so it renders at the Upscaling ratio's share
+    /// of the window — the pack's own copy of it stretches the smaller picture back, and TAA,
+    /// which would divide for the same reason, never runs under a pack. Frame generation and a
+    /// native (API 0.2) pack also read the world but stretch nothing themselves: `false` keeps
+    /// them, and a frame without a pack, at TAA's sizes.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         window: [u32; 2],
         always: bool,
-        pack_upscale: Option<f32>,
+        pack: bool,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
         if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
             self.target = None;
@@ -465,7 +466,7 @@ impl Post {
         // The old target goes first: a slider drag would otherwise hold the old and the new
         // targets together, and the sum is what runs a small GPU out of memory.
         loop {
-            let (size, output) = self.sizes(window, pack_upscale);
+            let (size, output) = self.sizes(window, pack);
             let history_size = self.taa_on.then_some(output);
             if self
                 .target
@@ -835,8 +836,7 @@ mod tests {
 
     /// A `shaders/` pack's own copy of the world stretches the smaller picture back to the
     /// window, so the world renders at the Upscaling ratio's share of it: 1280×720 at
-    /// Performance's 2 is 640×360 (#16757). Without a pack the sizes stay what they were —
-    /// the ratio only ever divided for TAA.
+    /// Performance's 2 is 640×360 (#16757). Without the pack the sizes stay what they were.
     #[test]
     fn a_shaders_pack_s_world_renders_at_the_upscaling_ratio() {
         let _gpu = crate::gfx::test_gpu::lock();
@@ -846,18 +846,10 @@ mod tests {
         };
         let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         post.upscale = 2.0;
-        let _ = post.prepare(&device, [1280, 720], true, Some(2.0));
+        let _ = post.prepare(&device, [1280, 720], true, true);
         assert_eq!(post.size(), Some([640, 360]));
-        // Frame generation, and a native pack, read the world at TAA's sizes.
-        let _ = post.prepare(&device, [1280, 720], true, None);
+        let _ = post.prepare(&device, [1280, 720], true, false);
         assert_eq!(post.size(), Some([1280, 720]));
-        // TAA itself divides by the ratio, as before.
-        post.taa_on = true;
-        let _ = post.prepare(&device, [1280, 720], true, None);
-        assert_eq!(post.size(), Some([640, 360]));
-        // Without a pack, TAA or a target the world goes straight to the screen.
-        post.taa_on = false;
-        assert!(post.prepare(&device, [1280, 720], false, None).is_none());
     }
 
     #[test]
@@ -893,10 +885,10 @@ mod tests {
             post.taa_on = false;
             assert_eq!(post.taa_render_size(window), expected);
             post.taa_on = true;
-            assert_eq!(post.sizes(window, None).0, expected);
+            assert_eq!(post.sizes(window, false).0, expected);
             // A native pack's frame: TAA off, so what its kept resources are made for.
             post.taa_on = false;
-            assert_eq!(post.pack_render_size(window), post.sizes(window, None).0);
+            assert_eq!(post.pack_render_size(window), post.sizes(window, false).0);
         }
     }
 
