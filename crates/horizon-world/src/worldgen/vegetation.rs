@@ -881,8 +881,17 @@ mod tests {
     #[test]
     fn multiface_growth_reads_the_blocks_class() {
         let classes = MultifaceClasses::from_names(
-            &["minecraft:glow_lichen", "example:glow_template"],
-            &["minecraft:sculk_vein", "example:sculk_template"],
+            &[
+                "minecraft:glow_lichen",
+                "minecraft:sculk_vein",
+                "example:glow_template",
+                "example:sculk_template",
+            ],
+            &[
+                "minecraft:sculk_vein",
+                "example:sculk_template",
+                "example:sculk_only",
+            ],
         );
         assert!(matches!(
             multiface_class(Some(&classes), "example:glow_template"),
@@ -893,6 +902,8 @@ mod tests {
             Ok(true)
         ));
         assert!(multiface_class(Some(&classes), "minecraft:stone").is_err());
+        // A sculk class alone is no `MultifaceSpreadeableBlock`.
+        assert!(multiface_class(Some(&classes), "example:sculk_only").is_err());
         // A bundle without a class chain answers for vanilla's own blocks only.
         assert!(matches!(
             multiface_class(None, "minecraft:glow_lichen"),

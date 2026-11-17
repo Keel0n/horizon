@@ -118,14 +118,16 @@ impl MultifaceClasses {
     }
     /// `Some(true)` for a block whose spreader is the sculk one, `Some(false)`
     /// for the default one, `None` for a block that is no
-    /// `MultifaceSpreadeableBlock`.
+    /// `MultifaceSpreadeableBlock`. Vanilla asks two independent questions —
+    /// the class decides whether the block may be grown at all, `SculkVeinBlock`
+    /// only picks its spreader — so a sculk class alone is no answer.
     pub(crate) fn sculk(&self, name: &str) -> Option<bool> {
-        if self.sculk.contains(name) {
-            Some(true)
-        } else if self.spreadeable.contains(name) {
-            Some(false)
-        } else {
+        if !self.spreadeable.contains(name) {
             None
+        } else if self.sculk.contains(name) {
+            Some(true)
+        } else {
+            Some(false)
         }
     }
     /// The answers a class chain would give, without a behaviour table.
