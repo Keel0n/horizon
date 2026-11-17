@@ -3954,12 +3954,6 @@ def bed_at(game, foot):
     return [x + 1, y, z]
 
 
-def clock_gap(a, b):
-    """Ticks between two day times, the short way round the 24000-tick day."""
-    gap = abs(a - b) % 24000
-    return min(gap, 24000 - gap)
-
-
 def check_sleep(host, guest, out):
     for g in (host, guest):
         g('command', command='gamemode survival')
@@ -4010,31 +4004,20 @@ def check_sleep(host, guest, out):
     assert up is None, f'Escape did not get the guest up: {detail}'
     assert after['guest'] is None and after['host'] is None and after['time'] < 1000, f'no morning: {detail}'
     # ClientClockManager takes the skipped night from the SetTime the hub
-    # broadcasts (ServerClockManager.modifyClock), so the guest's day time is
-    # read here in bed and again woken.
+    # broadcasts (ServerClockManager.modifyClock): in bed and woken, the guest's
+    # day time follows the world's (#16656).
     #
-    # The two day times are two reads into two games, and the guest's clock runs
-    # while the second one is served, so they cannot be equal: the guest's read
-    # lands as many ticks after the world's as a control process takes to start,
-    # plus the round trip, plus however long the guest's next frame takes (a
-    # headless game answers on a frame, one every 50 ms -- see
-    # game/runtime/headless.rs FRAME). Measured on the agent's machine, not on CI
-    # (this needs a built client): a comparably heavy start is 17.7 ms at the
-    # median and 21.8 ms at worst with every core busy, and a loopback round trip
-    # is 0.3 ms, so the reads land about 1 to 1.5 ticks apart. Five ticks (250 ms
-    # at 20 a second) is over three times the worst of the terms a read is made
-    # of.
-    #
-    # Nothing a missing sync produces comes near that: the world jumps from
-    # 18000 to dawn while the guest's clock runs on, so its unsynced read is
-    # still past 18000 against a world the assert above holds under 1000, and
-    # the short way round the 24000-tick day is about 5800 ticks at the nearest
-    # and 7000 at the farthest -- over a thousand times five. A guest clock that
-    # never took the login time at all is 6000 or more ticks out. Only clock
-    # noise fits the slack.
-    slack = 5
-    assert clock_gap(night_guest, night) <= slack, f'the guest clock left the world clock: {detail}'
-    assert clock_gap(after['time_guest'], after['time']) <= slack, f'the woken guest kept the night: {detail}'
+    # The two day times are two reads into two games, the guest's clock ticking
+    # between them: a control process start, a loopback round trip and the
+    # guest's next frame (a headless game answers on a frame, 50 ms,
+    # game/runtime/headless.rs) leave the later read about 1.4 ticks ahead, so
+    # ten ticks is 500 ms at 20 a second, 6.9 times that. Neither pair crosses
+    # midnight (13000..23000 in bed, under 1000 woken), so plain abs is the gap
+    # and never understates it. A guest that missed the sync is 5800-7000 ticks
+    # out the short way round, 580 times this: half a second of slack hides no
+    # regression.
+    assert abs(night_guest - night) <= 10, f'the guest clock left the world clock: {detail}'
+    assert abs(after['time_guest'] - after['time']) <= 10, f'the woken guest kept the night: {detail}'
     assert lying['host'] and lying['guest'], f'a sleeping player is drawn standing: {detail}'
     assert not lying['after'], f'a player up again is still drawn lying: {detail}'
     return detail
