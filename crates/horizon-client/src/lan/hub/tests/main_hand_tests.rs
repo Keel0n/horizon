@@ -126,21 +126,108 @@ fn other_players_are_told_a_left_hand_but_never_the_default_one() {
             Vec::new(),
             Vec::new(),
         )
-        .meta
     };
-    let hand = |meta: Vec<(u8, i32, Value)>| {
-        meta.into_iter()
+    let hand = |entries: Vec<(u8, i32, Value)>| {
+        entries
+            .into_iter()
             .filter(|(index, _, _)| *index == 15)
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        hand(state(0)),
+        hand(state(0).meta),
         [(15, HUMANOID_ARM, Value::Id(0))],
         "a left-handed player is drawn left-handed by the others"
     );
     assert_eq!(
-        hand(state(1)),
+        hand(state(1).meta),
         [],
         "the default RIGHT is left out, as vanilla's data does"
     );
+    // The state leaves the default out, so the tracker needs the default
+    // itself to send a client that holds LEFT the change back to RIGHT
+    // (Avatar.java:14: DATA_PLAYER_MAIN_HAND starts at RIGHT).
+    assert_eq!(
+        hand(state(1).defaults),
+        [(15, HUMANOID_ARM, Value::Id(1))],
+        "the tracker can put the hand back to its default"
+    );
+}
+
+/// The tracker itself (entity.rs send_dirty): another player's client is
+/// paired with the left hand and is sent the RIGHT it changes back to, which
+/// the state no longer carries.
+#[test]
+fn another_players_client_is_sent_the_hand_going_back_to_right() {
+    let (mut hub, _own) = hub_with_a_guest();
+    // Bob (entity 1) is left-handed before anybody is paired with him.
+    hub.guests.update(0, |g| {
+        g.info.main_hand = 0;
+        g.sent_chunks.insert((0, 0));
+    });
+    // Ada (entity 2) watches him.
+    let (tx, watching) = std::sync::mpsc::channel();
+    let mut ada = Guest::new(
+        crate::lan::Joined {
+            conn: 2,
+            uuid: 2,
+            name: "Ada".into(),
+            properties: Vec::new(),
+            info: horizon_protocol::packets::configuration::ClientInformation::new(8),
+            brand: "vanilla".into(),
+            sender: crate::lan::PlayerSender::new(tx, Arc::default()),
+            latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            address: "127.0.0.1:25566".parse().unwrap(),
+            expected: false,
+        },
+        2,
+        [0.5, 64.0, 0.5],
+        8,
+    );
+    ada.placed = true;
+    ada.dimension = "minecraft:overworld".into();
+    ada.sent_chunks.insert((0, 0));
+    hub.guests.push(ada);
+    // The test hub syncs no entity type registry.
+    hub.entity_types.insert("minecraft:player".into(), 1);
+    let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+    let mut next_entity = 3;
+    let border = crate::worldborder::WorldBorder::default();
+    let mut ctx = TickCtx {
+        sea_level: 63,
+        world: &mut world,
+        entities: &[],
+        next_entity: &mut next_entity,
+        spawn: [0.5, 64.0, 0.5],
+        spawn_angle: [0.0; 2],
+        difficulty: 2,
+        difficulty_locked: false,
+        clock_rate: 1.0,
+        tick_rate: 20.0,
+        tick_frozen: false,
+        tick_steps: Default::default(),
+        collision: None,
+        border: &border,
+        streaming: None,
+    };
+    let bob = |rx: &std::sync::mpsc::Receiver<crate::lan::Out>| {
+        main_hand_frames(rx)
+            .into_iter()
+            .filter(|frame| frame.0 == 1)
+            .collect::<Vec<_>>()
+    };
+    hub.track_entities(&mut ctx);
+    assert_eq!(
+        bob(&watching),
+        [(1, 15, HUMANOID_ARM, Value::Id(0))],
+        "the pairing sends the left hand he had before it"
+    );
+    hub.guests.update(0, |g| g.info.main_hand = 1);
+    hub.track_entities(&mut ctx);
+    assert_eq!(
+        bob(&watching),
+        [(1, 15, HUMANOID_ARM, Value::Id(1))],
+        "the change back to RIGHT reaches the other player's client"
+    );
+    hub.track_entities(&mut ctx);
+    assert_eq!(bob(&watching), [], "and it is not sent again");
 }

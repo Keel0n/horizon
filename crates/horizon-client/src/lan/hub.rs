@@ -3259,7 +3259,7 @@ impl Hub {
         if skin != 0 {
             meta.push((16, serializer::BYTE, Value::Byte(skin as i8)));
         }
-        // Player.DATA_PLAYER_MAIN_HAND (Avatar.java:38): the hand the item is
+        // Avatar.DATA_PLAYER_MAIN_HAND (Avatar.java:38): the hand the item is
         // drawn in, which another client cannot guess. Vanilla's synched data
         // sends the entries that differ from their default, and the hand's is
         // RIGHT = 1 (HumanoidArm.java:13-14), so only a left-handed player's
@@ -3282,10 +3282,14 @@ impl Hub {
             data: 0,
             meta,
             forced_meta: [0; 4],
-            // The effect swirls go back to none.
+            // The effect swirls go back to none, and the hand to RIGHT (1,
+            // Avatar.java:14): a left-handed player who changes back leaves the
+            // index out of `meta`, and the tracker still has to send the value
+            // its client now holds (entity.rs send_dirty).
             defaults: vec![
                 (10, serializer::PARTICLES, Value::Particles(Vec::new())),
                 (11, serializer::BOOLEAN, Value::Bool(false)),
+                (15, serializer::HUMANOID_ARM, Value::Id(1)),
             ],
             equipment,
             attributes,
