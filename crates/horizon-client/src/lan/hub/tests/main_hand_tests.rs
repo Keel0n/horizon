@@ -71,7 +71,11 @@ fn the_main_hand_reaches_the_players_own_client_on_a_change() {
         "an out-of-range hand is LEFT"
     );
     hub.sync_player_state(0);
-    assert_eq!(main_hand_frames(&rx), [], "the normalised hand is not repeated");
+    assert_eq!(
+        main_hand_frames(&rx),
+        [],
+        "the normalised hand is not repeated"
+    );
 }
 
 /// PlayerList.respawn makes a new ServerPlayer, whose tracker sends its
