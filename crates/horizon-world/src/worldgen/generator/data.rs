@@ -589,12 +589,9 @@ impl GeneratorData {
         };
         let bindings =
             FeatureBlockBindings::with_bound_tags(self.registry, self.integers.clone(), bound)?;
-        // Which blocks a class-checking codec accepts is a block class answer;
-        // it exists only where the block behaviours were loaded.
+        // Class answers exist only where the block behaviours were loaded.
         Ok(match &self.behaviours {
-            Some(behaviours) => {
-                bindings.with_multiface_classes(Arc::new(MultifaceClasses::new(behaviours)))
-            }
+            Some(behaviours) => bindings.with_multiface_classes(MultifaceClasses::new(behaviours)),
             None => bindings,
         })
     }
