@@ -3215,6 +3215,7 @@ impl Hub {
         living_flags: i8,
         bed: Option<[i32; 3]>,
         skin: u8,
+        main_hand: i32,
         health: f32,
         equipment: Vec<(u8, Option<horizon_protocol::item::Stack>)>,
         attributes: Vec<play::AttributeSnapshot>,
@@ -3257,6 +3258,14 @@ impl Hub {
         }
         if skin != 0 {
             meta.push((16, serializer::BYTE, Value::Byte(skin as i8)));
+        }
+        // Player.DATA_PLAYER_MAIN_HAND (Avatar.java:38): the hand the item is
+        // drawn in, which another client cannot guess. Vanilla's synched data
+        // sends the entries that differ from their default, and the hand's is
+        // RIGHT = 1 (HumanoidArm.java:13-14), so only a left-handed player's
+        // goes out.
+        if main_hand != 1 {
+            meta.push((15, serializer::HUMANOID_ARM, Value::Id(main_hand)));
         }
         meta.extend(effect_meta);
         EntityState {
@@ -3339,6 +3348,7 @@ impl Hub {
                     g.living_flags,
                     g.bed,
                     g.info.model_customisation,
+                    g.info.main_hand,
                     g.health,
                     equipment,
                     g.motion
@@ -3598,6 +3608,19 @@ impl Hub {
                 g.send(&C::SetEntityData(play::SetEntityData {
                     id: g.entity_id,
                     values: vec![(6, serializer::POSE, Value::Id(pose.id()))],
+                }));
+            }
+            // ServerEntity.sendDirtyEntityData, which ServerEntity.java:370-375
+            // hands to ChunkMap.TrackedEntity.sendToTrackingPlayersAndSelf
+            // (ChunkMap.java:1352-1356): the player's own entity data goes to
+            // its client too, the player not being in its own `seenBy`. The
+            // hand it chose (Avatar.java:38, the main-hand option of
+            // Skin Customization) is drawn on its own model.
+            if g.info.main_hand != g.sent_main_hand {
+                g.sent_main_hand = g.info.main_hand;
+                g.send(&C::SetEntityData(play::SetEntityData {
+                    id: g.entity_id,
+                    values: vec![(15, serializer::HUMANOID_ARM, Value::Id(g.info.main_hand))],
                 }));
             }
             // ServerEntity.sendDirtyEntityData: the parrots on the player's
@@ -4800,6 +4823,11 @@ impl Hub {
         self.respawned(id);
         self.guests.update(i, |g| {
             g.sent_pose = crate::pose::Pose::Standing;
+            // PlayerList.respawn: the new ServerPlayer's tracker sends its
+            // synched data afresh (ServerEntity.java:311-312), the hand it
+            // chose with it; the default is not sent, and is what the fresh
+            // one is (PlayerList.java:398's setMainArm changes none of it).
+            g.sent_main_hand = 1;
             // ServerPlayer.restoreFrom: the game mode again (onUpdateAbilities).
             g.send(&g.abilities_packet());
             // The new player faces the level's respawn direction (snapTo), or
