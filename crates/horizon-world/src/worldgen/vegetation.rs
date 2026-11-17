@@ -574,6 +574,30 @@ impl HugeMushroomFeature {
     }
 }
 
+/// `MultifaceGrowthFeature`'s answer for one block: vanilla validates that the
+/// block is a `MultifaceSpreadeableBlock`, and the block's own class picks its
+/// spreader — `SculkVeinBlock`'s is the sculk one, every other one is the
+/// default.
+fn multiface_class(
+    classes: Option<&super::block_feature::MultifaceClasses>,
+    name: &str,
+) -> Result<bool, DecodeError> {
+    match classes {
+        Some(classes) => classes
+            .sculk(name)
+            .ok_or(DecodeError::Field("multiface spreadeable block")),
+        // A bundle without `block-behaviours.json` exports no class chain, and
+        // no other source says whether a block is a `MultifaceSpreadeableBlock`
+        // or which spreader it takes. Rather than guess from the block's name
+        // alone (a mod's copy of a vanilla template is indistinguishable there),
+        // fall back to the two vanilla blocks: their names are their classes.
+        None => match name {
+            "minecraft:glow_lichen" => Ok(false),
+            "minecraft:sculk_vein" => Ok(true),
+            _ => Err(DecodeError::Field("multiface spreadeable block")),
+        },
+    }
+}
 #[derive(Clone, Debug)]
 pub struct MultifaceGrowthFeature {
     block: BlockStateId,
@@ -603,15 +627,11 @@ impl MultifaceGrowthFeature {
         let name = super::density::identifier(&serde_json::from_str::<String>(
             required(&object, "block")?.get(),
         )?)?;
-        // The 26.3 MultifaceSpreadeableBlock subclasses.
-        let sculk = match name.as_str() {
-            "minecraft:glow_lichen" => false,
-            "minecraft:sculk_vein" => true,
-            _ => return Err(DecodeError::Field("multiface spreadeable block")),
-        };
         let block = blocks
             .default_state(&name)
             .ok_or(DecodeError::Field("multiface block"))?;
+        // Vanilla decodes the block by name first, then validates its class.
+        let sculk = multiface_class(bindings.multiface_classes.as_deref(), &name)?;
         let flag = |key: &str| -> Result<bool, DecodeError> {
             Ok(optional(&object, key)
                 .map(|raw| serde_json::from_str::<bool>(raw.get()))
@@ -847,5 +867,41 @@ impl MultifaceGrowthFeature {
             || self.is_block(existing)
             || (self.blocks.has(existing, tb::WATER_BLOCK)
                 && self.blocks.has(existing, tb::WATER_SOURCE))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::worldgen::block_feature::MultifaceClasses;
+
+    /// Vanilla accepts a block by class (`MultifaceSpreadeableBlock`) and takes
+    /// its spreader from the class too (`SculkVeinBlock`'s is the sculk one), so
+    /// a mod's own block gets the answer of the vanilla block it copies.
+    #[test]
+    fn multiface_growth_reads_the_blocks_class() {
+        let classes = MultifaceClasses::from_names(
+            &["minecraft:glow_lichen", "example:glow_template"],
+            &["minecraft:sculk_vein", "example:sculk_template"],
+        );
+        assert!(matches!(
+            multiface_class(Some(&classes), "example:glow_template"),
+            Ok(false)
+        ));
+        assert!(matches!(
+            multiface_class(Some(&classes), "example:sculk_template"),
+            Ok(true)
+        ));
+        assert!(multiface_class(Some(&classes), "minecraft:stone").is_err());
+        // A bundle without a class chain answers for vanilla's own blocks only.
+        assert!(matches!(
+            multiface_class(None, "minecraft:glow_lichen"),
+            Ok(false)
+        ));
+        assert!(matches!(
+            multiface_class(None, "minecraft:sculk_vein"),
+            Ok(true)
+        ));
+        assert!(multiface_class(None, "example:glow_template").is_err());
     }
 }
