@@ -668,6 +668,12 @@ impl<'r> BlockSurvivalRegistry<'r> {
         state: BlockStateId,
         position: [i32; 3],
     ) -> Result<bool, SurvivalError<W::Error>> {
+        // The block's own rule is a mod's to replace: the parts of `state`'s block answer
+        // before the table does, as they do in the live game (#17943). Asked before the rule
+        // lookup, since a mod block's states have no rule here (Unsupported).
+        if let Some(survives) = crate::native_worldgen_hooks::can_survive(state, position) {
+            return Ok(survives);
+        }
         let rule = self
             .rules
             .get(state.0 as usize)
@@ -1121,13 +1127,24 @@ impl<'r> BlockSurvivalRegistry<'r> {
             Rule::Cocoa(direction) => Ok(self
                 .cocoa
                 .contains(&self.read(world, relative(position, direction))?)),
-            Rule::Crop => Ok(world
-                .raw_brightness(position, 0)
-                .map_err(SurvivalError::World)?
-                >= 8
-                && self
-                    .crops
-                    .contains(&self.read(world, relative(position, Direction::Down))?)),
+            Rule::Crop => {
+                if world
+                    .raw_brightness(position, 0)
+                    .map_err(SurvivalError::World)?
+                    < 8
+                {
+                    return Ok(false);
+                }
+                // `CropBlock.mayPlaceOn`: the plant's own rule, which a mod may replace.
+                let below = relative(position, Direction::Down);
+                let ground = self.read(world, below)?;
+                if let Some(may) =
+                    crate::native_worldgen_hooks::may_place_on(state, ground, below)
+                {
+                    return Ok(may);
+                }
+                Ok(self.crops.contains(&ground))
+            }
             Rule::DoublePlant(upper) => {
                 let below = self.read(world, relative(position, Direction::Down))?;
                 if !upper {
@@ -1151,8 +1168,18 @@ impl<'r> BlockSurvivalRegistry<'r> {
                     .is_face_sturdy(world, neighbor, below, Direction::Up, SupportType::Full)
                     .map_err(SurvivalError::Support)
             }
-            Rule::TagBelow(index) => Ok(self.bound_tags[index]
-                .contains(&self.read(world, relative(position, Direction::Down))?)),
+            Rule::TagBelow(index) => {
+                // `VegetationBlock.mayPlaceOn`: the plant's ground rule, which a mod may replace
+                // before the tag the table holds for it decides.
+                let below = relative(position, Direction::Down);
+                let ground = self.read(world, below)?;
+                if let Some(may) =
+                    crate::native_worldgen_hooks::may_place_on(state, ground, below)
+                {
+                    return Ok(may);
+                }
+                Ok(self.bound_tags[index].contains(&ground))
+            }
             Rule::CactusFlower => {
                 let below = relative(position, Direction::Down);
                 self.read(world, below)?;
