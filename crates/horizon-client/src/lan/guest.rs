@@ -445,9 +445,7 @@ pub struct Guest {
     pub glide_end_unsent: bool,
     /// Pose last delivered to this player's own entity data, initially Standing.
     pub sent_pose: Pose,
-    /// The hand this player's own entity data was last sent
-    /// (Avatar.DATA_PLAYER_MAIN_HAND, `HumanoidArm`), initially RIGHT (1):
-    /// the default, which vanilla's dirty data never carries.
+    /// Avatar.DATA_PLAYER_MAIN_HAND last sent to this player's own entity data, RIGHT (1) first.
     pub sent_main_hand: i32,
     /// The shoulder parrots (Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT) the
     /// player's client was last sent about itself.

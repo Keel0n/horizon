@@ -37,8 +37,7 @@ fn main_hand_frames(rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -> Vec<(i32
 #[test]
 fn the_main_hand_reaches_the_players_own_client_on_a_change() {
     let (mut hub, rx) = hub_with_a_guest();
-    // `ClientInformation::new` asks for RIGHT = 1, the default: vanilla's
-    // synched data carries only what differs from it, so nothing goes out.
+    // `ClientInformation::new` asks for RIGHT = 1, the default: nothing to send.
     hub.sync_player_state(0);
     assert_eq!(main_hand_frames(&rx), [], "the default hand is not sent");
     // LEFT = 0 is not the default: one frame, to the player's own entity.
@@ -61,6 +60,18 @@ fn the_main_hand_reaches_the_players_own_client_on_a_change() {
     );
     hub.sync_player_state(0);
     assert_eq!(main_hand_frames(&rx), []);
+    // HumanoidArm's id mapper reads any other value as LEFT, which is 0
+    // (HumanoidArm.java:17): the raw 7 goes out as one 0, and not again,
+    // although the raw value never equals the RIGHT the field starts at.
+    hub.guests.update(0, |g| g.info.main_hand = 7);
+    hub.sync_player_state(0);
+    assert_eq!(
+        main_hand_frames(&rx),
+        [(1, 15, HUMANOID_ARM, Value::Id(0))],
+        "an out-of-range hand is LEFT"
+    );
+    hub.sync_player_state(0);
+    assert_eq!(main_hand_frames(&rx), [], "the normalised hand is not repeated");
 }
 
 /// PlayerList.respawn makes a new ServerPlayer, whose tracker sends its
@@ -142,6 +153,11 @@ fn other_players_are_told_a_left_hand_but_never_the_default_one() {
         hand(state(1).meta),
         [],
         "the default RIGHT is left out, as vanilla's data does"
+    );
+    assert_eq!(
+        hand(state(7).meta),
+        [(15, HUMANOID_ARM, Value::Id(0))],
+        "an out-of-range hand is LEFT here too (HumanoidArm.java:17)"
     );
     // The state leaves the default out, so the tracker needs the default
     // itself to send a client that holds LEFT the change back to RIGHT
