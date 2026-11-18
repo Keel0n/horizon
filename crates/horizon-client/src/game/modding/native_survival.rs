@@ -128,7 +128,7 @@ mod tests {
     use horizon_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
     use horizon_world::registry::BlockRegistry;
     use mod_api::{
-        BlockKey, BlockPart, CanSustainPlantV2Event, CanSurviveV2Event, Hooks, MayPlaceOnV2Event,
+        BlockKey, BlockPart, CanSurviveV2Event, CanSustainPlantV2Event, Hooks, MayPlaceOnV2Event,
         ModEntry, Mods, WorldgenHost,
     };
     use std::collections::{BTreeMap, HashMap};
