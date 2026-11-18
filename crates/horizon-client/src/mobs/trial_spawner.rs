@@ -1059,8 +1059,7 @@ impl TrialSpawnerExt for TrialSpawner {
         // EntityType.by: an unknown type spawns nothing.
         let id = data.id().filter(|id| l.entity_exists(id))?;
         let at = match spawner::read_pos(data.entity.get(&JavaString::from("Pos"))) {
-            // `Entity.load` clamps the saved position of what it spawns.
-            Some(p) => crate::entity_nbt::clamp_loaded_position(p),
+            Some(p) => p,
             None => {
                 let range = f64::from(self.active_config().spawn_range);
                 let x =

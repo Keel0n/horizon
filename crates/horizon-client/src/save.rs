@@ -3763,7 +3763,6 @@ impl Level {
         self.player_fall_particles = None;
         let n = |k: &str| number(p.get(k));
         let f = |k: &str| float(p.get(k));
-        // `Entity.load` clamps the saved position to the world's limits.
         self.position = read_doubles::<3>(p.get("Pos"))
             .map(crate::entity_nbt::clamp_loaded_position);
         if let Some(r) = read_doubles::<2>(p.get("Rotation")) {
