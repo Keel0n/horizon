@@ -1645,17 +1645,29 @@ impl Recipes {
         ) in sources.recipes.iter().zip(sources.station_recipes(items))
         {
             let mut entry = None;
-            if let Some(kind) = json["type"].as_str() {
+            if let Some(serializer) = json["type"].as_str() {
                 let id = if name.contains(':') {
                     name.clone()
                 } else {
                     format!("minecraft:{name}")
                 };
-                entry = Some(crate::crafting::RecipeSnapshot::new(
-                    id,
-                    mod_kinds::recipe_type(name, kind)?,
-                    json.clone(),
-                ));
+                match mod_kinds::recipe_type(name, serializer)? {
+                    mod_kinds::Reading::Type(kind) => {
+                        entry = Some(crate::crafting::RecipeSnapshot::new(
+                            id,
+                            kind,
+                            json.clone(),
+                        ));
+                    }
+                    mod_kinds::Reading::Unread => {
+                        // A carried content mod's own type: no mod here reads
+                        // it, so the file is skipped whole.
+                        log::error!(
+                            "recipes: {id} skipped: recipe type {serializer} is not registered by any mod"
+                        );
+                        continue;
+                    }
+                }
             }
             if custom_type(json).is_some() {
                 if let Some(recipe) = mod_kinds::decode(name, json)

@@ -1,4 +1,4 @@
-//! Registered serializer resolution, fatal unknown IDs and shared grid dispatch.
+//! Registered serializer resolution, fatal unknown IDs of code mods and shared grid dispatch.
 use super::*;
 use mod_api::{CraftingGrid, CraftingRecipeHandler, CraftingRecipeValue};
 use std::result::Result;
@@ -20,26 +20,45 @@ fn source_path(name: &str) -> String {
     let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", name));
     format!("data/{namespace}/recipe/{path}.json")
 }
+/// What a recipe file's `type` resolves to before the file is parsed.
+#[derive(Debug)]
+pub enum Reading {
+    /// A registered reader: the file is read as this recipe type.
+    Type(String),
+    /// Nothing loaded here reads it: a carried content mod's own type.
+    Unread,
+}
 /// Resolve the file's serializer before parsing, after source conditions have run.
-pub fn recipe_type(file: &str, serializer: &str) -> Result<String, String> {
+/// A namespace code owns must have registered its serializer; a carried content
+/// mod's own stays unread.
+pub fn recipe_type(file: &str, serializer: &str) -> Result<Reading, String> {
     if super::VANILLA_RECIPE_SERIALIZERS.contains(&serializer) {
-        return Ok(if serializer.starts_with("minecraft:crafting_") {
-            "minecraft:crafting"
-        } else if serializer.starts_with("minecraft:smithing_") {
-            "minecraft:smithing"
-        } else {
-            serializer
-        }
-        .into());
+        return Ok(Reading::Type(
+            if serializer.starts_with("minecraft:crafting_") {
+                "minecraft:crafting"
+            } else if serializer.starts_with("minecraft:smithing_") {
+                "minecraft:smithing"
+            } else {
+                serializer
+            }
+            .into(),
+        ));
     }
-    mod_api::__private::parts_installation::recipe_serializer(serializer)
-        .map(|(recipe_type, _)| recipe_type)
-        .ok_or_else(|| {
-            format!(
-                "recipe {}, unregistered recipe serializer {serializer}",
-                source_path(file)
-            )
-        })
+    if let Some((recipe_type, _)) =
+        mod_api::__private::parts_installation::recipe_serializer(serializer)
+    {
+        return Ok(Reading::Type(recipe_type));
+    }
+    let (namespace, _) = serializer.split_once(':').unwrap_or(("minecraft", serializer));
+    if namespace == "minecraft"
+        || mod_api::__private::installed_code_ids().any(|id| id == namespace)
+    {
+        return Err(format!(
+            "recipe {}, unregistered recipe serializer {serializer}",
+            source_path(file)
+        ));
+    }
+    Ok(Reading::Unread)
 }
 
 #[cfg(test)]
@@ -282,9 +301,12 @@ pub fn sync_recipe_types(requested: &[String]) -> Vec<String> {
     types
 }
 /// Resolve file serializers to recipe types at the content transport boundary.
+/// A file nothing here reads is not sent.
 pub fn file_has_type(file: &Value, types: &[String]) -> bool {
-    file["type"]
-        .as_str()
-        .and_then(|id| recipe_type("sync", id).ok())
-        .is_some_and(|kind| types.contains(&kind))
+    matches!(
+        file["type"]
+            .as_str()
+            .and_then(|id| recipe_type("sync", id).ok()),
+        Some(Reading::Type(kind)) if types.contains(&kind)
+    )
 }
