@@ -674,7 +674,8 @@ impl<'r> BlockSurvivalRegistry<'r> {
     ) -> Result<Option<bool>, SurvivalError<W::Error>> {
         let below = relative(position, Direction::Down);
         let ground = self.read(world, below)?;
-        if let Some(sustains) = crate::native_worldgen_hooks::can_sustain_plant(state, ground, below)
+        if let Some(sustains) =
+            crate::native_worldgen_hooks::can_sustain_plant(state, ground, below)
         {
             return Ok(Some(sustains));
         }
@@ -694,10 +695,9 @@ impl<'r> BlockSurvivalRegistry<'r> {
         if let Some(survives) = crate::native_worldgen_hooks::can_survive(state, position) {
             return Ok(survives);
         }
-        let rule = self
-            .rules
-            .get(state.0 as usize)
-            .ok_or_else(|| SurvivalError::Registry(invalid("survival candidate outside registry")))?;
+        let rule = self.rules.get(state.0 as usize).ok_or_else(|| {
+            SurvivalError::Registry(invalid("survival candidate outside registry"))
+        })?;
         let Some(rule) = *rule else {
             // A block the table has no rule for: its parts answer the ground question its
             // template's `canSurvive` would ask, and only an unanswered one is unsupported
@@ -1504,7 +1504,10 @@ mod part_hook_tests {
                     SurvivalRule::TagBelow("minecraft:supports_vegetation".to_owned()),
                 ),
                 ("minecraft:wheat".to_owned(), SurvivalRule::Crop),
-                ("minecraft:brown_mushroom".to_owned(), SurvivalRule::Mushroom),
+                (
+                    "minecraft:brown_mushroom".to_owned(),
+                    SurvivalRule::Mushroom,
+                ),
                 ("minecraft:sea_pickle".to_owned(), SurvivalRule::SeaPickle),
             ]),
             ..Default::default()
@@ -1679,11 +1682,7 @@ mod part_hook_tests {
 
     /// Runs `f` with the soil's switch and the plant's set together, then clears both: the
     /// pair the table asks in that order.
-    fn answers_both<R>(
-        soil: Option<Asked>,
-        plant: Option<Asked>,
-        f: impl FnOnce() -> R,
-    ) -> R {
+    fn answers_both<R>(soil: Option<Asked>, plant: Option<Asked>, f: impl FnOnce() -> R) -> R {
         set(&SUSTAINS, soil);
         set(&PLACE_ON, plant);
         let result = f();
@@ -1966,7 +1965,11 @@ mod part_hook_tests {
         assert!(!answers_both(
             Some(soil_refuses),
             Some(plant_allows),
-            || survives(&survival, &mut TestWorld::new(SHORT_GRASS, GRASS), SHORT_GRASS)
+            || survives(
+                &survival,
+                &mut TestWorld::new(SHORT_GRASS, GRASS),
+                SHORT_GRASS
+            )
         ));
 
         // A silent soil leaves the plant's yes on ground outside the tag.
@@ -1995,11 +1998,13 @@ mod part_hook_tests {
             at: GROUND,
             answer: Some(false),
         };
-        assert!(answers_both(
-            Some(soil_allows),
-            Some(plant_refuses),
-            || survives(&survival, &mut TestWorld::new(SHORT_GRASS, GRASS), SHORT_GRASS)
-        ));
+        assert!(answers_both(Some(soil_allows), Some(plant_refuses), || {
+            survives(
+                &survival,
+                &mut TestWorld::new(SHORT_GRASS, GRASS),
+                SHORT_GRASS,
+            )
+        }));
     }
 
     /// A mushroom keeps its two shortcuts and asks the ground question only between them: a
