@@ -1452,6 +1452,16 @@ mod tests {
         assert_eq!(record_from_compound(&tag), Ok(root));
     }
 
+    /// `Entity.load` clamps a saved position to the world's limits; the record
+    /// decode applies the same clamp before the entity is placed.
+    #[test]
+    fn record_loads_clamps_position_to_the_world_limits() {
+        let mut root = record([1, 2, 3, 4], "mymod:robot");
+        root.position = [40_000_000.0, -30_000_000.0, 3.0000512e7];
+        let decoded = record_from_compound(&root.to_tag()).unwrap();
+        assert_eq!(decoded.position, [30_000_512.0, -20_000_000.0, 30_000_512.0]);
+    }
+
     /// The writer names the fields the format fixes: the common fields under
     /// their vanilla names, the envelope under its own.
     #[test]

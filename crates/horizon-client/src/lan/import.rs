@@ -276,19 +276,14 @@ const MAX_Y: f64 = 2.0e7;
 /// limits. `read_player` clamps the position the way `Entity.load` does, so the
 /// raw values decide whether the record is acceptable at all.
 fn check_raw_position(tag: &Tag) -> Result<(), String> {
-    let Some(Tag::List(list)) = tag.get("Pos") else {
+    let Some(raw) = tag.get("Pos") else {
         return Ok(());
     };
-    let mut p = [0.0f64; 3];
-    let numeric = list.len() == 3
-        && p.iter_mut().zip(list).all(|(slot, t)| match t {
-            Tag::Double(bits) => {
-                *slot = f64::from_bits(*bits);
-                true
-            }
-            _ => false,
-        });
-    if !numeric || !p.iter().all(|v| v.is_finite()) {
+    // The same numeric decode `read_player` and vanilla's codec accept.
+    let Some(p) = crate::save::read_doubles::<3>(Some(raw)) else {
+        return Err("the record's position is not a number".into());
+    };
+    if !p.iter().all(|v| v.is_finite()) {
         return Err("the record's position is not a number".into());
     }
     if p[0].abs() > MAX_XZ || p[2].abs() > MAX_XZ || p[1].abs() > MAX_Y {
@@ -658,5 +653,32 @@ fn playerdata_dimension(level: &Level) -> String {
     match level.dimension.as_str() {
         "" => "minecraft:overworld".to_owned(),
         d => d.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The raw check reads `Pos` with the same numeric codec the load does,
+    /// and refuses what no player can have.
+    #[test]
+    fn a_raw_position_accepts_numeric_tags_and_refuses_nan_and_the_far_world() {
+        let doubles = |v: [f64; 3]| {
+            Tag::compound([("Pos", Tag::List(v.map(|v| Tag::Double(v.to_bits())).to_vec()))])
+        };
+        assert!(check_raw_position(&doubles([8.5, 64.0, -2.5])).is_ok());
+        assert!(check_raw_position(&Tag::compound([(
+            "Pos",
+            Tag::List(vec![
+                Tag::Int(8),
+                Tag::Float(64.0f32.to_bits()),
+                Tag::Long(-2),
+            ]),
+        )]))
+        .is_ok());
+        assert!(check_raw_position(&doubles([f64::NAN, 64.0, 0.0])).is_err());
+        assert!(check_raw_position(&doubles([40_000_000.0, 64.0, 0.0])).is_err());
+        assert!(check_raw_position(&Tag::Compound(Default::default())).is_ok());
     }
 }
