@@ -7,11 +7,7 @@
 //! `Player.stabAttack`). The hit's feedback (`onKineticHit`) reaches the
 //! players around as entity event 2. A left click jabs instead
 //! (`PiercingWeapon.attack`), which Lunge turns into a dash.
-use super::{
-    Game,
-    lan_vehicles::{ridden_known_movement, vehicle_driver},
-    view_vector,
-};
+use super::{Game, lan_vehicles::ridden_known_movement, view_vector};
 pub(super) use horizon_client::spear::hits_in_reach;
 use horizon_client::{
     attack_strength::delay,
@@ -69,23 +65,19 @@ impl Game<'_> {
     /// which cases that leaves. The window's own player follows its mount
     /// instead (`positionRider`).
     pub(super) fn known_player_movement(&self) -> Vec3 {
-        if let (Some(conn), Some(vehicle)) = (self.lan_acting, self.riding) {
-            if let Some(movement) = self
-                .lan
-                .as_ref()
-                .and_then(|host| ridden_known_movement(&host.hub.guests, conn, vehicle))
-            {
-                return movement;
-            }
-            // `Entity.getKnownSpeed` of a vehicle this guest does not hold the
-            // reins of, in vanilla's sense (`Entity.getControllingPassenger`:
-            // the first player at them, on a ride that player steers).
+        if let (Some(conn), Some(vehicle), Some(host)) =
+            (self.lan_acting, self.riding, self.lan.as_ref())
+        {
+            // `Entity.getKnownSpeed`: without a controlling player, the mob's
+            // own move applies to every passenger. Check that before treating
+            // the first guest's client movement as the vehicle's movement.
             if let Some(i) = self.mobs.iter().position(|m| m.id == vehicle)
-                && let Some(host) = self.lan.as_ref()
-                && !(equine::controlled(&self.mobs[i])
-                    && vehicle_driver(&host.hub.guests, vehicle) == Some(conn))
+                && !equine::controlled(&self.mobs[i])
             {
                 return self.mob_speed(i).scale(1.0 / 20.0);
+            }
+            if let Some(movement) = ridden_known_movement(&host.hub.guests, conn, vehicle) {
+                return movement;
             }
         }
         if self.lan_acting.is_some() {

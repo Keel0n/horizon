@@ -778,7 +778,8 @@ pub(super) fn vehicle_driver(guests: &[Guest], vehicle: u32) -> Option<u32> {
 /// `Entity.getKnownSpeed`'s own `lastKnownSpeed` there, the vehicle's move per
 /// tick, which the caller has to find: `Game::known_player_movement` reads a
 /// mob's with `Game::mob_speed` and keeps no source for a boat or a minecart
-/// yet.
+/// yet. The caller must check that a player actually controls the vehicle
+/// before borrowing the first guest's client movement.
 pub(super) fn ridden_known_movement(guests: &[Guest], conn: u32, vehicle: u32) -> Option<Vec3> {
     let driver = vehicle_driver(guests, vehicle).filter(|&driver| driver != conn)?;
     let [x, y, z] = guests.iter().find(|g| g.conn == driver)?.known_movement;
@@ -916,9 +917,10 @@ mod controller_tests {
         .unwrap();
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
-        options.game_dir = Some(
-            std::env::temp_dir().join(format!("horizon-unsaddled-mount-unit-{}", std::process::id())),
-        );
+        options.game_dir = Some(std::env::temp_dir().join(format!(
+            "horizon-unsaddled-mount-unit-{}",
+            std::process::id()
+        )));
         options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
         let mut game = Game::new(
             &loaded.resources,
@@ -990,6 +992,16 @@ mod controller_tests {
             (seen.x - 0.2).abs() < 1.0e-9 && seen.y == 0.0 && seen.z == 0.0,
             "a mount nobody steers charges with its own move: {seen:?}"
         );
+        // A second guest does not turn the first rider into a controlling
+        // passenger while the horse is still unsaddled.
+        let (mut passenger, _) = guest_with_packets(3, 22);
+        (passenger.vehicle, passenger.vehicle_order) = (Some(horse), 2);
+        game.lan.as_mut().unwrap().hub.guests.push(passenger);
+        let seen = game.as_guest(3, |g| g.known_player_movement()).unwrap();
+        assert!(
+            (seen.x - 0.2).abs() < 1.0e-9 && seen.y == 0.0 && seen.z == 0.0,
+            "the second passenger also takes the unsteered mount's own move: {seen:?}"
+        );
         // Saddled, with its rider at the reins (`equine::controlled`): the move
         // that rider's client sent, not the mount's.
         game.mobs[0].extra.set_saddled(true);
@@ -1001,6 +1013,11 @@ mod controller_tests {
         assert!(
             (seen.x - 0.3).abs() < 1.0e-9 && seen.y == 0.0 && seen.z == 0.0,
             "a rider at the reins charges with its own move: {seen:?}"
+        );
+        let seen = game.as_guest(3, |g| g.known_player_movement()).unwrap();
+        assert!(
+            (seen.x - 0.3).abs() < 1.0e-9 && seen.y == 0.0 && seen.z == 0.0,
+            "the second passenger takes the controlling rider's client move: {seen:?}"
         );
     }
 
