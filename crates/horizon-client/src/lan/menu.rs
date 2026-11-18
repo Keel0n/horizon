@@ -216,10 +216,10 @@ pub enum SlotBacking {
 /// A container slot's stack as the menu holds it, so a tick can compare it
 /// with the copy the client was last sent without copying it first.
 #[derive(Debug)]
-pub enum SlotRef<'a> {
+pub(super) enum SlotRef<'a> {
     /// The slot of the menu's own storage (a block entity's, the ender
-    /// chest's, a mod's menu, the player's inventory): `None` for an empty
-    /// slot, and for one past the end of the storage.
+    /// chest's, a mod's menu, the player's inventory): the stack where it
+    /// lies, `None` for an empty slot and for one the menu does not have.
     Borrowed(Option<&'a ItemStack>),
     /// A slot no storage holds as a list (`Menu::craft_result`, a mod menu
     /// type's linked containers), read out and copied to be looked at.
@@ -239,7 +239,7 @@ impl SlotRef<'_> {
         }
     }
     /// The slot's stack, copied if the menu lent it.
-    pub fn into_stack(self) -> Option<ItemStack> {
+    pub(super) fn into_stack(self) -> Option<ItemStack> {
         match self {
             SlotRef::Borrowed(now) => now.cloned(),
             SlotRef::Owned(now) => now,
@@ -347,7 +347,12 @@ impl Slots {
     /// and the linked containers read out and copied. An empty slot and one
     /// the menu does not have are both `Borrowed(None)`, as both are `None`
     /// for [`Self::get`].
-    pub fn get_ref<'a>(self, world: &'a World, guest: &'a Guest, mut n: usize) -> SlotRef<'a> {
+    pub(super) fn get_ref<'a>(
+        self,
+        world: &'a World,
+        guest: &'a Guest,
+        mut n: usize,
+    ) -> SlotRef<'a> {
         if self == Slots::Ender {
             return SlotRef::Borrowed(guest.ender_items.get(n).and_then(|s| s.as_ref()));
         }
@@ -371,14 +376,14 @@ impl Slots {
         }
         for k in self.halves() {
             let Some(slots) = shown(world, k) else {
-                return SlotRef::Owned(None);
+                return SlotRef::Borrowed(None);
             };
             if n < slots.len() {
                 return SlotRef::Borrowed(slots[n].as_ref());
             }
             n -= slots.len();
         }
-        SlotRef::Owned(None)
+        SlotRef::Borrowed(None)
     }
     /// Container slot `n`.
     pub fn get(self, world: &World, guest: &Guest, n: usize) -> Option<ItemStack> {
