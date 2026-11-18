@@ -81,6 +81,10 @@ pub struct NativeWorldgenHooks {
     /// `may_place_on`: the parts' answer for the plant `state` standing on `ground` at
     /// `ground_pos`, `Some` replacing the plant's own `mayPlaceOn` rule. Pure, as `can_survive`.
     pub may_place_on: fn(BlockStateId, BlockStateId, [i32; 3], &mut Option<bool>),
+    /// `can_sustain_plant`: the parts of the soil `ground` at `ground_pos` answer for the plant
+    /// `state` above it, `Some` replacing the plant's own `mayPlaceOn` rule. Asked before
+    /// `may_place_on`, as the live game asks it. Pure, as `can_survive`.
+    pub can_sustain_plant: fn(BlockStateId, BlockStateId, [i32; 3], &mut Option<bool>),
     /// Runs one feature, whose Part lookups read the tables the server published
     /// when it started: a feature that started before a `/reload` finishes with
     /// the tables it started with.
@@ -163,6 +167,19 @@ pub(crate) fn may_place_on(
     let mut may = None;
     (hooks.may_place_on)(state, ground, ground_pos, &mut may);
     may
+}
+
+/// The parts of the soil `ground`'s answer for the plant `state` above it at `ground_pos`:
+/// `Some` replaces the plant's own rule, `None` leaves it to the table this call reads.
+pub(crate) fn can_sustain_plant(
+    state: BlockStateId,
+    ground: BlockStateId,
+    ground_pos: [i32; 3],
+) -> Option<bool> {
+    let hooks = HOOKS.get()?;
+    let mut sustains = None;
+    (hooks.can_sustain_plant)(state, ground, ground_pos, &mut sustains);
+    sustains
 }
 
 /// Run one feature with the Part tables published when it started.

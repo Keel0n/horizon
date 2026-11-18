@@ -662,6 +662,26 @@ impl<'r> BlockSurvivalRegistry<'r> {
     fn fluid_matches(&self, tag: usize, fluid: FluidState) -> bool {
         self.fluid_tags[tag] & fluid.kind().mask() != 0
     }
+    /// The plant's own ground rule for the plant `state` standing at `position`, as the live
+    /// game's `VegetationBlock.mayPlaceOn` asks it: the parts of the soil under it first, the
+    /// parts of the plant's own block second (`Survive::may_place_on`, `level/survive.rs`), and
+    /// `None` when neither answered, leaving the caller's own rule to decide.
+    fn plant_place_on<W: SurvivalWorld>(
+        &self,
+        world: &mut W,
+        state: BlockStateId,
+        position: [i32; 3],
+    ) -> Result<Option<bool>, SurvivalError<W::Error>> {
+        let below = relative(position, Direction::Down);
+        let ground = self.read(world, below)?;
+        if let Some(sustains) = crate::native_worldgen_hooks::can_sustain_plant(state, ground, below)
+        {
+            return Ok(Some(sustains));
+        }
+        Ok(crate::native_worldgen_hooks::may_place_on(
+            state, ground, below,
+        ))
+    }
     pub fn can_survive<W: SurvivalWorld>(
         &self,
         world: &mut W,
@@ -677,8 +697,16 @@ impl<'r> BlockSurvivalRegistry<'r> {
         let rule = self
             .rules
             .get(state.0 as usize)
-            .ok_or_else(|| SurvivalError::Registry(invalid("survival candidate outside registry")))?
-            .ok_or(SurvivalError::Unsupported(state))?;
+            .ok_or_else(|| SurvivalError::Registry(invalid("survival candidate outside registry")))?;
+        let Some(rule) = *rule else {
+            // A block the table has no rule for: its parts answer the ground question its
+            // template's `canSurvive` would ask, and only an unanswered one is unsupported
+            // (#17943).
+            return match self.plant_place_on(world, state, position)? {
+                Some(survives) => Ok(survives),
+                None => Err(SurvivalError::Unsupported(state)),
+            };
+        };
         match rule {
             Rule::Fire => {
                 let below = relative(position, Direction::Down);
@@ -726,15 +754,24 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 Ok(!self.solid.contains(above) || self.fence_gates.contains(&above))
             }
             Rule::Mushroom => {
-                let below = self.read(world, relative(position, Direction::Down))?;
-                if self.mushroom_light_override.contains(&below) {
+                let below = relative(position, Direction::Down);
+                let neighbor = self.read(world, below)?;
+                if self.mushroom_light_override.contains(&neighbor) {
                     return Ok(true);
                 }
-                Ok(world
+                if world
                     .raw_brightness(position, 0)
                     .map_err(SurvivalError::World)?
-                    < 13
-                    && self.solid_render.contains(below))
+                    >= 13
+                {
+                    return Ok(false);
+                }
+                // `MushroomBlock.canSurvive` below 13 asks `mayPlaceOn`, which a mod may
+                // replace: the soil's parts first, the plant's second (#17943).
+                if let Some(may) = self.plant_place_on(world, state, position)? {
+                    return Ok(may);
+                }
+                Ok(self.solid_render.contains(neighbor))
             }
             Rule::Multiface(faces) => {
                 for direction in Direction::ALL {
@@ -822,6 +859,11 @@ impl<'r> BlockSurvivalRegistry<'r> {
                             .is_some_and(|value| value == "8")))
             }
             Rule::SeaPickle => {
+                // `SeaPickleBlock.canSurvive` asks `mayPlaceOn`, which a mod may replace: the
+                // soil's parts first, the plant's second (#17943).
+                if let Some(may) = self.plant_place_on(world, state, position)? {
+                    return Ok(may);
+                }
                 let at = relative(position, Direction::Down);
                 let neighbor = self.read(world, at)?;
                 let shape = self
@@ -1135,13 +1177,12 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 {
                     return Ok(false);
                 }
-                // `CropBlock.mayPlaceOn`: the plant's own rule, which a mod may replace.
-                let below = relative(position, Direction::Down);
-                let ground = self.read(world, below)?;
-                if let Some(may) = crate::native_worldgen_hooks::may_place_on(state, ground, below)
-                {
+                // `CropBlock.mayPlaceOn`: the plant's own rule, which a mod may replace — the
+                // soil's parts first, as the live game asks them, then the plant's.
+                if let Some(may) = self.plant_place_on(world, state, position)? {
                     return Ok(may);
                 }
+                let ground = self.read(world, relative(position, Direction::Down))?;
                 Ok(self.crops.contains(&ground))
             }
             Rule::DoublePlant(upper) => {
@@ -1169,13 +1210,12 @@ impl<'r> BlockSurvivalRegistry<'r> {
             }
             Rule::TagBelow(index) => {
                 // `VegetationBlock.mayPlaceOn`: the plant's ground rule, which a mod may replace
-                // before the tag the table holds for it decides.
-                let below = relative(position, Direction::Down);
-                let ground = self.read(world, below)?;
-                if let Some(may) = crate::native_worldgen_hooks::may_place_on(state, ground, below)
-                {
+                // before the tag the table holds for it decides — the soil's parts first, then
+                // the plant's, as the live game asks them.
+                if let Some(may) = self.plant_place_on(world, state, position)? {
                     return Ok(may);
                 }
+                let ground = self.read(world, relative(position, Direction::Down))?;
                 Ok(self.bound_tags[index].contains(&ground))
             }
             Rule::CactusFlower => {
@@ -1319,9 +1359,10 @@ mod part_hook_tests {
     };
 
     /// The table's blocks in id order: air, the two grounds the vegetation tag holds and
-    /// the crops tag does not, the crop and the plant the two rules belong to, and a mod
-    /// block no rule in the table covers.
-    const NAMES: [&str; 7] = [
+    /// the crops tag does not, the crop and the plant the two rules belong to, a mod
+    /// block no rule in the table covers, and the mushroom, its light-overriding ground and
+    /// the pickle whose three rules ask a part about the ground.
+    const NAMES: [&str; 10] = [
         "minecraft:air",
         "minecraft:grass_block",
         "minecraft:sand",
@@ -1329,6 +1370,9 @@ mod part_hook_tests {
         "minecraft:wheat",
         "minecraft:short_grass",
         "mymod:crystal",
+        "minecraft:brown_mushroom",
+        "minecraft:mycelium",
+        "minecraft:sea_pickle",
     ];
     const AIR: BlockStateId = BlockStateId(0);
     const GRASS: BlockStateId = BlockStateId(1);
@@ -1337,6 +1381,9 @@ mod part_hook_tests {
     const WHEAT: BlockStateId = BlockStateId(4);
     const SHORT_GRASS: BlockStateId = BlockStateId(5);
     const CRYSTAL: BlockStateId = BlockStateId(6);
+    const MUSHROOM: BlockStateId = BlockStateId(7);
+    const MYCELIUM: BlockStateId = BlockStateId(8);
+    const SEA_PICKLE: BlockStateId = BlockStateId(9);
     /// Where a plant stands and where the ground under it is: somewhere no other test of
     /// this binary reads, so an answer set here reaches no other test's query.
     const PLANT: [i32; 3] = [7, 70, 7];
@@ -1415,8 +1462,8 @@ mod part_hook_tests {
         ])
     }
 
-    /// The tags the table's two rules bind: the vegetation ground short grass stands on
-    /// and the crops' farmland.
+    /// The tags the table's rules bind: the vegetation ground short grass stands on, the
+    /// crops' farmland, and the ground a mushroom needs no light on.
     fn tags() -> BTreeMap<String, Vec<String>> {
         BTreeMap::from([
             (
@@ -1427,11 +1474,16 @@ mod part_hook_tests {
                 "minecraft:supports_crops".to_owned(),
                 vec!["minecraft:farmland".to_owned()],
             ),
+            (
+                "minecraft:overrides_mushroom_light_requirement".to_owned(),
+                vec!["minecraft:mycelium".to_owned()],
+            ),
         ])
     }
 
     /// The table under test: short grass stands on the vegetation tag, wheat on the
-    /// crops' one, and the mod block has no rule at all.
+    /// crops' one, the mushroom on light and its own ground, the pickle on its support, and
+    /// the mod block has no rule at all.
     fn survival(tags: &BTreeMap<String, Vec<String>>) -> BlockSurvivalRegistry<'static> {
         let registry = registry();
         let collisions = CachedCollisionRegistry::from_nbt(&shapes_tag(registry, None), registry)
@@ -1452,6 +1504,8 @@ mod part_hook_tests {
                     SurvivalRule::TagBelow("minecraft:supports_vegetation".to_owned()),
                 ),
                 ("minecraft:wheat".to_owned(), SurvivalRule::Crop),
+                ("minecraft:brown_mushroom".to_owned(), SurvivalRule::Mushroom),
+                ("minecraft:sea_pickle".to_owned(), SurvivalRule::SeaPickle),
             ]),
             ..Default::default()
         };
@@ -1483,6 +1537,11 @@ mod part_hook_tests {
                 blocks: BTreeMap::from([(PLANT, plant), (GROUND, ground)]),
                 light: 15,
             }
+        }
+        /// The same world under `light` everywhere, as a cave or a lit room has.
+        fn with_light(mut self, light: i32) -> Self {
+            self.light = light;
+            self
         }
     }
     impl DynamicSupportWorld for TestWorld {
@@ -1538,6 +1597,7 @@ mod part_hook_tests {
     }
     static SURVIVES: Mutex<Option<Asked>> = Mutex::new(None);
     static PLACE_ON: Mutex<Option<Asked>> = Mutex::new(None);
+    static SUSTAINS: Mutex<Option<Asked>> = Mutex::new(None);
     /// How many times a switch was consulted and matched.
     static ASKS: AtomicUsize = AtomicUsize::new(0);
     /// Held by a test that turns a switch on for its whole run, so no two ever do.
@@ -1572,6 +1632,16 @@ mod part_hook_tests {
             *may = answer;
         }
     }
+    fn hook_can_sustain_plant(
+        state: BlockStateId,
+        ground: BlockStateId,
+        ground_position: [i32; 3],
+        sustains: &mut Option<bool>,
+    ) {
+        if let Some(answer) = asked(&SUSTAINS, state, Some(ground), ground_position) {
+            *sustains = answer;
+        }
+    }
 
     /// Installs the callbacks once for this test binary; every other test's query matches
     /// no switch, so it sees the answers it would see with no hooks installed.
@@ -1584,6 +1654,7 @@ mod part_hook_tests {
                 rotate: |_, _, _, table| table,
                 can_survive: hook_can_survive,
                 may_place_on: hook_may_place_on,
+                can_sustain_plant: hook_can_sustain_plant,
                 feature: |place| place(),
             });
             assert!(
@@ -1603,6 +1674,21 @@ mod part_hook_tests {
         set(switch, Some(ask));
         let result = f();
         set(switch, None);
+        result
+    }
+
+    /// Runs `f` with the soil's switch and the plant's set together, then clears both: the
+    /// pair the table asks in that order.
+    fn answers_both<R>(
+        soil: Option<Asked>,
+        plant: Option<Asked>,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        set(&SUSTAINS, soil);
+        set(&PLACE_ON, plant);
+        let result = f();
+        set(&SUSTAINS, None);
+        set(&PLACE_ON, None);
         result
     }
 
@@ -1785,5 +1871,273 @@ mod part_hook_tests {
             before + 1,
             "the table asked the parts"
         );
+    }
+
+    /// A block the table has no rule for is answered by the ground question its template's
+    /// `canSurvive` would ask, the soil's parts and then the plant's: a mod plant whose ground
+    /// rule alone answers no longer gets `Unsupported` (#17943).
+    #[test]
+    fn a_rule_less_block_asks_its_parts_about_the_ground() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        // Neither the soil nor the plant answers: the table still has no rule for the block.
+        let mut world = TestWorld::new(CRYSTAL, SAND);
+        assert!(matches!(
+            survival.can_survive(&mut world, CRYSTAL, PLANT),
+            Err(SurvivalError::Unsupported(state)) if state == CRYSTAL
+        ));
+
+        // The plant's own ground rule answers, on the ground under it.
+        let allow = Asked {
+            state: CRYSTAL,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers_both(None, Some(allow), || survives(
+            &survival,
+            &mut TestWorld::new(CRYSTAL, SAND),
+            CRYSTAL
+        )));
+        let refuse = Asked {
+            state: CRYSTAL,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(!answers_both(None, Some(refuse), || survives(
+            &survival,
+            &mut TestWorld::new(CRYSTAL, SAND),
+            CRYSTAL
+        )));
+
+        // So does the soil's, asked first.
+        let soil = Asked {
+            state: CRYSTAL,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers_both(Some(soil), None, || survives(
+            &survival,
+            &mut TestWorld::new(CRYSTAL, SAND),
+            CRYSTAL
+        )));
+    }
+
+    /// The soil's answer comes before the plant's, as the live game's `may_place_on` asks them
+    /// (`level/survive.rs`): a soil that refuses wins over a plant that allows, and only a
+    /// silent soil leaves the plant's answer.
+    #[test]
+    fn the_soils_answer_comes_before_the_plants() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        // The table alone: short grass stands on grass, not on sand.
+        assert!(survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, GRASS),
+            SHORT_GRASS
+        ));
+        assert!(!survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, SAND),
+            SHORT_GRASS
+        ));
+
+        // A soil that refuses and a plant that allows: the soil is the answer.
+        let soil_refuses = Asked {
+            state: SHORT_GRASS,
+            ground: Some(GRASS),
+            at: GROUND,
+            answer: Some(false),
+        };
+        let plant_allows = Asked {
+            state: SHORT_GRASS,
+            ground: Some(GRASS),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(!answers_both(
+            Some(soil_refuses),
+            Some(plant_allows),
+            || survives(&survival, &mut TestWorld::new(SHORT_GRASS, GRASS), SHORT_GRASS)
+        ));
+
+        // A silent soil leaves the plant's yes on ground outside the tag.
+        let plant_allows = Asked {
+            state: SHORT_GRASS,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers_both(None, Some(plant_allows), || survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, SAND),
+            SHORT_GRASS
+        )));
+
+        // And a soil that allows wins over a plant that refuses.
+        let soil_allows = Asked {
+            state: SHORT_GRASS,
+            ground: Some(GRASS),
+            at: GROUND,
+            answer: Some(true),
+        };
+        let plant_refuses = Asked {
+            state: SHORT_GRASS,
+            ground: Some(GRASS),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(answers_both(
+            Some(soil_allows),
+            Some(plant_refuses),
+            || survives(&survival, &mut TestWorld::new(SHORT_GRASS, GRASS), SHORT_GRASS)
+        ));
+    }
+
+    /// A mushroom keeps its two shortcuts and asks the ground question only between them: a
+    /// ground in the light-override tag holds it without a question, light of 13 and more
+    /// refuses it without one, and below 13 the parts' answer replaces the solid-ground rule.
+    #[test]
+    fn a_mushroom_keeps_its_light_and_tag_shortcuts() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        // A ground in `overrides_mushroom_light_requirement` holds it in full light, and the
+        // parts are not asked about a plant that would refuse.
+        let refuse = Asked {
+            state: MUSHROOM,
+            ground: Some(MYCELIUM),
+            at: GROUND,
+            answer: Some(false),
+        };
+        let before = ASKS.load(Ordering::SeqCst);
+        let mut world = TestWorld::new(MUSHROOM, MYCELIUM);
+        assert!(answers_both(None, Some(refuse), || survives(
+            &survival, &mut world, MUSHROOM
+        )));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before,
+            "a light-overriding ground asks no part"
+        );
+
+        // Light of 13 and more refuses it, and the parts are not asked about a plant that
+        // would allow.
+        let allow = Asked {
+            state: MUSHROOM,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        let before = ASKS.load(Ordering::SeqCst);
+        assert!(!answers_both(None, Some(allow), || survives(
+            &survival,
+            &mut TestWorld::new(MUSHROOM, SAND),
+            MUSHROOM
+        )));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before,
+            "full light asks no part"
+        );
+
+        // Below 13 the parts answer the ground question instead of the solid-ground rule, on a
+        // ground that is not solid at all in this table.
+        let before = ASKS.load(Ordering::SeqCst);
+        assert!(!survives(
+            &survival,
+            &mut TestWorld::new(MUSHROOM, SAND).with_light(12),
+            MUSHROOM
+        ));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before,
+            "no part answers, and the table's own rule decides"
+        );
+        let allow = Asked {
+            state: MUSHROOM,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers_both(None, Some(allow), || survives(
+            &survival,
+            &mut TestWorld::new(MUSHROOM, SAND).with_light(12),
+            MUSHROOM
+        )));
+        let refuse = Asked {
+            state: MUSHROOM,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(!answers_both(None, Some(refuse), || survives(
+            &survival,
+            &mut TestWorld::new(MUSHROOM, SAND).with_light(12),
+            MUSHROOM
+        )));
+    }
+
+    /// A sea pickle asks the parts about its ground before its own support rule: a plant that
+    /// refuses is refused on support the table would otherwise hold, and one that allows stands
+    /// where the table's empty shapes would not.
+    #[test]
+    fn a_pickle_asks_the_parts_before_its_support() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        // The table alone: every shape in it is empty, so the pickle stands nowhere.
+        assert!(!survives(
+            &survival,
+            &mut TestWorld::new(SEA_PICKLE, SAND),
+            SEA_PICKLE
+        ));
+
+        let allow = Asked {
+            state: SEA_PICKLE,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers_both(None, Some(allow), || survives(
+            &survival,
+            &mut TestWorld::new(SEA_PICKLE, SAND),
+            SEA_PICKLE
+        )));
+        let refuse = Asked {
+            state: SEA_PICKLE,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(!answers_both(None, Some(refuse), || survives(
+            &survival,
+            &mut TestWorld::new(SEA_PICKLE, SAND),
+            SEA_PICKLE
+        )));
+        // The soil's answer is asked first here too.
+        let soil = Asked {
+            state: SEA_PICKLE,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        assert!(answers_both(Some(soil), None, || survives(
+            &survival,
+            &mut TestWorld::new(SEA_PICKLE, SAND),
+            SEA_PICKLE
+        )));
     }
 }
