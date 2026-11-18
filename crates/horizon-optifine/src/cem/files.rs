@@ -75,18 +75,15 @@ pub fn load_jem(root: &ResourceSource, path: &str) -> Option<EntityModel> {
     for warning in &jem.warnings {
         log::warn!("Horizon: custom entity model {warning}");
     }
-    if let Some(texture) = &jem.texture {
-        if atlas_name(texture).is_none() {
-            log::warn!(
-                "Horizon: custom entity model {path}: its texture {texture} is not a path under \
-                 assets/<namespace>/, so not in the atlas: the vanilla one draws"
-            );
-        } else if !root.contains(texture) {
-            log::warn!(
-                "Horizon: custom entity model {path}: its texture {texture} doesn't exist, \
-                 so not in the atlas: the vanilla one draws"
-            );
-        }
+    // `texture` resolves under `assets/<namespace>/` by construction (`paths::resolve`), so the
+    // atlas always names it; only a missing file keeps it out.
+    if let Some(texture) = &jem.texture
+        && !root.contains(texture)
+    {
+        log::warn!(
+            "Horizon: custom entity model {path}: its texture {texture} doesn't exist, \
+             so not in the atlas: the vanilla one draws"
+        );
     }
     Some(jem)
 }
