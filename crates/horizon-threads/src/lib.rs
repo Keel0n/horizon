@@ -240,17 +240,8 @@ fn parse_worker_count(value: Option<String>) -> Option<usize> {
     value?.trim().parse().ok().filter(|&n| n > 0)
 }
 
-/// Whether the run asks for the chunk decoders to be raised again, the
-/// behaviour #18241 took away: `HORIZON_DECODER_PRIORITY=1`. Read once, like
-/// [`worker_count`], since every decoder thread asks and the answer can't
-/// change under a run.
-fn decoder_priority_switch() -> bool {
-    static SWITCH: OnceLock<bool> = OnceLock::new();
-    *SWITCH.get_or_init(|| parse_decoder_priority(std::env::var("HORIZON_DECODER_PRIORITY").ok()))
-}
-
-/// `true` only for `1` (`" 1 "` counts): off where a run doesn't ask for it,
-/// and off for a value someone mistyped, rather than a silent raise.
+/// `true` only for `1` (`" 1 "` counts): `HORIZON_DECODER_PRIORITY` off where
+/// a run doesn't ask for it, and off for a value someone mistyped.
 fn parse_decoder_priority(value: Option<String>) -> bool {
     value.is_some_and(|v| v.trim() == "1")
 }
@@ -293,20 +284,16 @@ fn favour() -> bool {
     false
 }
 
-/// Called by a chunk decoder thread as it starts (a pool of up to four, the
-/// `ChunkDecoder` of `game/network/remote_chunks.rs`): it leaves the calling
-/// thread where the process's pools already are, at the ordinary priority
-/// every helper has, below the one thread that ticks and draws a frame
-/// (`favour_current` there) — four decoders ahead of it held frames back,
-/// whereas vanilla decodes a chunk on the frame thread itself and its
-/// background workers ask for nothing. `HORIZON_DECODER_PRIORITY=1` gives the
-/// old raise back for an A/B run: the decoder goes ahead of the frame as
-/// [`favour_current`] asks. On Linux this changes nothing either way, for the
-/// reason [`favour_current`] gives: an unprivileged thread there may lower its
-/// own priority but not raise it. Whether the OS took a raise it still asked
-/// for, false when it asked for none.
+/// Called by a chunk decoder thread as it starts (the `ChunkDecoder` worker,
+/// up to four): the calling thread stays at the ordinary priority, below the
+/// one that ticks and draws a frame, as a decoder should. `HORIZON_DECODER_PRIORITY=1`
+/// gives the old raise back for an A/B run ([`favour_current`]); a value read
+/// once, like [`worker_count`]. Whether the OS took a raise it still asked for.
 pub fn chunk_decoder_current() -> bool {
-    decoder_priority_switch() && favour_current()
+    static SWITCH: OnceLock<bool> = OnceLock::new();
+    let asked = *SWITCH
+        .get_or_init(|| parse_decoder_priority(std::env::var("HORIZON_DECODER_PRIORITY").ok()));
+    asked && favour_current()
 }
 
 /// The CPU time the calling thread has used, where only an OS call gives it
@@ -942,7 +929,8 @@ mod tests {
         }
         // A run started with `HORIZON_DECODER_PRIORITY=1` asks for the old
         // raise: the same measurement then has to show it, which is the A/B.
-        let asked = super::parse_decoder_priority(std::env::var("HORIZON_DECODER_PRIORITY").ok());
+        // Read here, not through the switch the code under test reads.
+        let asked = std::env::var("HORIZON_DECODER_PRIORITY").is_ok_and(|v| v.trim() == "1");
         let priority = |call: fn() -> bool| {
             std::thread::spawn(move || {
                 call();
@@ -955,12 +943,6 @@ mod tests {
         };
         let decoder = priority(super::chunk_decoder_current);
         let frame = priority(super::favour_current);
-        eprintln!(
-            "#18241 thread priorities (HORIZON_DECODER_PRIORITY={}): chunk decoder {decoder}, \
-             frame's own call {frame} (NORMAL {THREAD_PRIORITY_NORMAL}, \
-             ABOVE_NORMAL {THREAD_PRIORITY_ABOVE_NORMAL})",
-            if asked { 1 } else { 0 }
-        );
         assert_eq!(
             decoder,
             if asked {
