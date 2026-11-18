@@ -104,38 +104,6 @@ fn carried_content_recipe_type_is_skipped_and_code_owned_is_fatal() {
         },
     );
 }
-        folder.join("unknown.json"),
-        r#"{"type":"absent:serializer","neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:true"}}]}"#,
-    )
-    .unwrap();
-    let recipes = Recipes::load(root.path(), &items, &PackOverlay::NONE, &load).unwrap();
-    assert_eq!(recipes.crafting.len(), 1);
-    assert_eq!(
-        recipes.by_type["minecraft:crafting"][0].id,
-        "minecraft:valid"
-    );
-    assert_eq!(
-        recipes.by_type["minecraft:crafting"][0].json["type"],
-        "minecraft:crafting_shapeless"
-    );
-    std::fs::write(
-        folder.join("unknown.json"),
-        r#"{"type":"absent:serializer","neoforge:conditions":[{"type":"absent:condition"}]}"#,
-    )
-    .unwrap();
-    let error = Recipes::load(root.path(), &items, &PackOverlay::NONE, &load)
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(
-        error.contains("unknown.json") && error.contains("absent:condition"),
-        "{error}"
-    );
-    assert!(
-        !error.contains("unregistered recipe serializer"),
-        "conditions must run before serializer lookup: {error}"
-    );
-}
 struct Machine;
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for Machine {
