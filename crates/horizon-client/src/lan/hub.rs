@@ -5249,7 +5249,7 @@ mod tests {
     #[path = "../far_tests.rs"]
     mod far_tests;
     mod live_player_limit_tests;
-mod main_hand_tests;
+    mod main_hand_tests;
     mod menu_sync_tests;
     mod ordered_inbox_tests;
     mod pending_move_bound_tests;
