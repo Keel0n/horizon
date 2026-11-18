@@ -21,6 +21,8 @@ fn source_path(name: &str) -> String {
     format!("data/{namespace}/recipe/{path}.json")
 }
 /// What a recipe file's `type` resolves to before the file is parsed.
+/// `Debug` is for the tests' `unwrap_err`, which reads the reason a type is refused.
+#[derive(Debug)]
 pub enum Reading {
     /// A registered reader: the file is read as this recipe type.
     Type(String),
