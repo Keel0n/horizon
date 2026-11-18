@@ -190,6 +190,10 @@ pub struct BlockSurvivalRegistry<'r> {
     cactus_support: BTreeSet<BlockStateId>,
     mushroom_light_override: BTreeSet<BlockStateId>,
     rules: Vec<Option<Rule>>,
+    /// The states whose own template asks its ground
+    /// (`Behaviours::states_asking_their_ground`): the only ones whose rules may consult
+    /// the ground hooks (#17943).
+    asks_their_ground: BTreeSet<BlockStateId>,
     unstable_bottom_center: BTreeSet<BlockStateId>,
     supports_bamboo: BTreeSet<BlockStateId>,
     bound_tags: Vec<BTreeSet<BlockStateId>>,
@@ -225,6 +229,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
         definitions: &SurvivalDefinitions,
         tags: &BTreeMap<String, Vec<String>>,
         fluid_tags: &BTreeMap<String, Vec<String>>,
+        asks_their_ground: BTreeSet<BlockStateId>,
     ) -> io::Result<Self> {
         if !std::ptr::eq(registry, properties.registry())
             || !std::ptr::eq(registry, support.registry())
@@ -513,6 +518,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
             cactus_support: tag_states("minecraft:supports_cactus")?,
             mushroom_light_override: tag_states("minecraft:overrides_mushroom_light_requirement")?,
             rules,
+            asks_their_ground,
             unstable_bottom_center: tag_states("minecraft:unstable_bottom_center")?,
             supports_bamboo: tag_states("minecraft:supports_bamboo")?,
             bound_tags: tag_names
@@ -699,9 +705,13 @@ impl<'r> BlockSurvivalRegistry<'r> {
             SurvivalError::Registry(invalid("survival candidate outside registry"))
         })?;
         let Some(rule) = *rule else {
-            // A block the table has no rule for: its parts answer the ground question its
-            // template's `canSurvive` would ask, and only an unanswered one is unsupported
-            // (#17943).
+            // A block the table has no rule for: its template's own `canSurvive` answers,
+            // which asks the ground only in the templates that ask it at all — a modded
+            // torch's parts never decide where it stands — and an unanswered one is
+            // unsupported (#17943).
+            if !self.asks_their_ground.contains(&state) {
+                return Err(SurvivalError::Unsupported(state));
+            }
             return match self.plant_place_on(world, state, position)? {
                 Some(survives) => Ok(survives),
                 None => Err(SurvivalError::Unsupported(state)),
@@ -1119,6 +1129,12 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 if upper {
                     return Ok(self.is_lower_half(neighbor, state));
                 }
+                // The lower half's `canSurvive` asks the ground its template asks
+                // (`SmallDripleafBlock` reaches `VegetationBlock.mayPlaceOn`), where a mod
+                // may replace the plant's rule, before the table's tags decide (#17943).
+                if let Some(may) = self.plant_place_on(world, state, position)? {
+                    return Ok(may);
+                }
                 Ok(self.small_dripleaf.contains(&neighbor)
                     || (world
                         .fluid_state(position)
@@ -1188,6 +1204,12 @@ impl<'r> BlockSurvivalRegistry<'r> {
             Rule::DoublePlant(upper) => {
                 let below = self.read(world, relative(position, Direction::Down))?;
                 if !upper {
+                    // The lower half's `canSurvive` goes on to the plant's ground rule
+                    // (`VegetationBlock.mayPlaceOn`), where a mod may replace the tag the
+                    // table holds, before that tag decides (#17943).
+                    if let Some(may) = self.plant_place_on(world, state, position)? {
+                        return Ok(may);
+                    }
                     return Ok(self.vegetation.contains(&below));
                 }
                 let neighbor = self.registry.state(below).unwrap();
@@ -1209,10 +1231,13 @@ impl<'r> BlockSurvivalRegistry<'r> {
                     .map_err(SurvivalError::Support)
             }
             Rule::TagBelow(index) => {
-                // `VegetationBlock.mayPlaceOn`: the plant's ground rule, which a mod may replace
-                // before the tag the table holds for it decides — the soil's parts first, then
-                // the plant's, as the live game asks them.
-                if let Some(may) = self.plant_place_on(world, state, position)? {
+                // `VegetationBlock.mayPlaceOn`: the plant's ground rule, which a mod may
+                // replace before the tag the table holds for it decides. Only a template
+                // that asks its ground asks it here: soul fire shares this rule and keeps
+                // its own base-block tag (#17943).
+                if self.asks_their_ground.contains(&state)
+                    && let Some(may) = self.plant_place_on(world, state, position)?
+                {
                     return Ok(may);
                 }
                 let ground = self.read(world, relative(position, Direction::Down))?;
@@ -1350,7 +1375,7 @@ mod part_hook_tests {
     };
     use horizon_core::{geometry::VoxelShape, nbt::Tag};
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         io,
         sync::{
             Mutex, OnceLock, PoisonError,
@@ -1360,9 +1385,11 @@ mod part_hook_tests {
 
     /// The table's blocks in id order: air, the two grounds the vegetation tag holds and
     /// the crops tag does not, the crop and the plant the two rules belong to, a mod
-    /// block no rule in the table covers, and the mushroom, its light-overriding ground and
-    /// the pickle whose three rules ask a part about the ground.
-    const NAMES: [&str; 10] = [
+    /// plant no rule in the table covers, the mushroom, its light-overriding ground, the
+    /// pickle whose three rules ask a part about the ground, the soul fire that shares
+    /// the vegetation rule without asking its ground, and a mod lantern the table has no
+    /// rule for either and whose template asks no ground.
+    const NAMES: [&str; 12] = [
         "minecraft:air",
         "minecraft:grass_block",
         "minecraft:sand",
@@ -1373,6 +1400,8 @@ mod part_hook_tests {
         "minecraft:brown_mushroom",
         "minecraft:mycelium",
         "minecraft:sea_pickle",
+        "minecraft:soul_fire",
+        "mymod:lantern",
     ];
     const AIR: BlockStateId = BlockStateId(0);
     const GRASS: BlockStateId = BlockStateId(1);
@@ -1384,6 +1413,8 @@ mod part_hook_tests {
     const MUSHROOM: BlockStateId = BlockStateId(7);
     const MYCELIUM: BlockStateId = BlockStateId(8);
     const SEA_PICKLE: BlockStateId = BlockStateId(9);
+    const SOUL_FIRE: BlockStateId = BlockStateId(10);
+    const LANTERN: BlockStateId = BlockStateId(11);
     /// Where a plant stands and where the ground under it is: somewhere no other test of
     /// this binary reads, so an answer set here reaches no other test's query.
     const PLANT: [i32; 3] = [7, 70, 7];
@@ -1414,10 +1445,10 @@ mod part_hook_tests {
     fn shapes_tag(registry: &BlockRegistry, kind: Option<&str>) -> Tag {
         let states = (0..registry.len())
             .map(|id| {
-                let state = registry
+                registry
                     .state(BlockStateId(id as u32))
-                    .expect("registry index is in bounds");
-                Tag::String(state.name.as_str().into())
+                    .expect("registry index is in bounds")
+                    .to_nbt()
             })
             .collect::<Vec<_>>();
         let empty = Tag::compound([
@@ -1446,8 +1477,8 @@ mod part_hook_tests {
 
     /// The property table beside the collision shapes: no block is solid, liquid or
     /// replaceable in it, which these rules never ask about.
-    fn properties_tag(occlusion: Tag) -> Tag {
-        let blocks = NAMES.iter().map(|name| (*name, Tag::Byte(0)));
+    fn properties_tag(occlusion: Tag, names: &[&str]) -> Tag {
+        let blocks = names.iter().map(|name| (*name, Tag::Byte(0)));
         Tag::compound([
             ("DataVersion", Tag::Int(crate::DATA_VERSION)),
             (
@@ -1463,7 +1494,8 @@ mod part_hook_tests {
     }
 
     /// The tags the table's rules bind: the vegetation ground short grass stands on, the
-    /// crops' farmland, and the ground a mushroom needs no light on.
+    /// crops' farmland, the ground a mushroom needs no light on, and the base blocks soul
+    /// fire keeps, which shares the vegetation rule without asking a ground.
     fn tags() -> BTreeMap<String, Vec<String>> {
         BTreeMap::from([
             (
@@ -1478,26 +1510,18 @@ mod part_hook_tests {
                 "minecraft:overrides_mushroom_light_requirement".to_owned(),
                 vec!["minecraft:mycelium".to_owned()],
             ),
+            (
+                "minecraft:soul_fire_base_blocks".to_owned(),
+                vec!["minecraft:sand".to_owned()],
+            ),
         ])
     }
 
-    /// The table under test: short grass stands on the vegetation tag, wheat on the
-    /// crops' one, the mushroom on light and its own ground, the pickle on its support, and
-    /// the mod block has no rule at all.
-    fn survival(tags: &BTreeMap<String, Vec<String>>) -> BlockSurvivalRegistry<'static> {
-        let registry = registry();
-        let collisions = CachedCollisionRegistry::from_nbt(&shapes_tag(registry, None), registry)
-            .expect("collision table");
-        let properties = BlockPropertiesRegistry::from_nbt(
-            &properties_tag(shapes_tag(registry, None)),
-            &collisions,
-        )
-        .expect("property table");
-        let properties: &'static BlockPropertiesRegistry<'static> = Box::leak(Box::new(properties));
-        let support =
-            BlockSupportRegistry::from_nbt(&shapes_tag(registry, Some("block_support")), registry)
-                .expect("support table");
-        let definitions = SurvivalDefinitions {
+    /// The rules the table holds: short grass stands on the vegetation tag, wheat on the
+    /// crops' one, the mushroom on light and its own ground, the pickle on its support, the
+    /// soul fire on its base blocks, and the two mod blocks have no rule at all.
+    fn definitions() -> SurvivalDefinitions {
+        SurvivalDefinitions {
             rules: BTreeMap::from([
                 (
                     "minecraft:short_grass".to_owned(),
@@ -1509,9 +1533,42 @@ mod part_hook_tests {
                     SurvivalRule::Mushroom,
                 ),
                 ("minecraft:sea_pickle".to_owned(), SurvivalRule::SeaPickle),
+                (
+                    "minecraft:soul_fire".to_owned(),
+                    SurvivalRule::TagBelow("minecraft:soul_fire_base_blocks".to_owned()),
+                ),
             ]),
             ..Default::default()
-        };
+        }
+    }
+
+    /// The states whose own templates ask the ground they stand on, as the behaviours'
+    /// class chains name them: the plants of this table, the mod plant among them, and not
+    /// soul fire's block nor the mod lantern, whose templates ask no ground.
+    fn asks_their_ground() -> BTreeSet<BlockStateId> {
+        BTreeSet::from([WHEAT, SHORT_GRASS, CRYSTAL, MUSHROOM, SEA_PICKLE])
+    }
+
+    /// The survival table of `registry` over the empty tables these rules never read
+    /// further.
+    fn table(
+        registry: &'static BlockRegistry,
+        names: &[&str],
+        definitions: &SurvivalDefinitions,
+        tags: &BTreeMap<String, Vec<String>>,
+        asks_their_ground: BTreeSet<BlockStateId>,
+    ) -> BlockSurvivalRegistry<'static> {
+        let collisions = CachedCollisionRegistry::from_nbt(&shapes_tag(registry, None), registry)
+            .expect("collision table");
+        let properties = BlockPropertiesRegistry::from_nbt(
+            &properties_tag(shapes_tag(registry, None), names),
+            &collisions,
+        )
+        .expect("property table");
+        let properties: &'static BlockPropertiesRegistry<'static> = Box::leak(Box::new(properties));
+        let support =
+            BlockSupportRegistry::from_nbt(&shapes_tag(registry, Some("block_support")), registry)
+                .expect("support table");
         BlockSurvivalRegistry::new(
             registry,
             properties,
@@ -1520,11 +1577,112 @@ mod part_hook_tests {
                 BlockCollisionRegistry::new(std::sync::Arc::new(collisions))
                     .expect("collision registry"),
             ),
-            &definitions,
+            definitions,
             tags,
             &BTreeMap::new(),
+            asks_their_ground,
         )
         .expect("survival table")
+    }
+
+    /// The table under test over [`NAMES`].
+    fn survival(tags: &BTreeMap<String, Vec<String>>) -> BlockSurvivalRegistry<'static> {
+        table(
+            registry(),
+            &NAMES,
+            &definitions(),
+            tags,
+            asks_their_ground(),
+        )
+    }
+
+    /// The half plants in id order: air, the grass both their tags hold, sand they do not,
+    /// and the lower and upper halves of small dripleaf and of a double plant.
+    const HALVES: [(&str, Option<&str>); 7] = [
+        ("minecraft:air", None),
+        ("minecraft:grass_block", None),
+        ("minecraft:sand", None),
+        ("minecraft:small_dripleaf", Some("lower")),
+        ("minecraft:small_dripleaf", Some("upper")),
+        ("minecraft:tall_grass", Some("lower")),
+        ("minecraft:tall_grass", Some("upper")),
+    ];
+    /// The same blocks once each, for the table keyed by name.
+    const HALF_NAMES: [&str; 5] = [
+        "minecraft:air",
+        "minecraft:grass_block",
+        "minecraft:sand",
+        "minecraft:small_dripleaf",
+        "minecraft:tall_grass",
+    ];
+    const DRIPLEAF_LOWER: BlockStateId = BlockStateId(3);
+    const DRIPLEAF_UPPER: BlockStateId = BlockStateId(4);
+    const TALL_LOWER: BlockStateId = BlockStateId(5);
+    const TALL_UPPER: BlockStateId = BlockStateId(6);
+
+    /// The registry of [`HALVES`], each state carrying the `half` its template reads.
+    fn halves_registry() -> &'static BlockRegistry {
+        let states = HALVES
+            .iter()
+            .map(|(name, half)| {
+                let properties = half.map(|half| {
+                    (
+                        "properties",
+                        Tag::compound([("half", Tag::String(half.into()))]),
+                    )
+                });
+                Tag::compound(
+                    [("id", Tag::String((*name).into()))]
+                        .into_iter()
+                        .chain(properties),
+                )
+            })
+            .collect::<Vec<_>>();
+        let defaults = HALVES
+            .iter()
+            .enumerate()
+            .map(|(id, (name, _))| (*name, Tag::Int(id as i32)));
+        Box::leak(Box::new(
+            BlockRegistry::from_nbt(&Tag::compound([
+                ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+                ("states", Tag::List(states)),
+                ("defaults", Tag::compound(defaults)),
+            ]))
+            .expect("half plant registry"),
+        ))
+    }
+
+    /// The table under test for the two half plants: both tags hold grass, and no state of
+    /// this registry asks its ground through the behaviour tables, which these two rules do
+    /// not read.
+    fn halves() -> BlockSurvivalRegistry<'static> {
+        let definitions = SurvivalDefinitions {
+            rules: BTreeMap::from([
+                (
+                    "minecraft:small_dripleaf".to_owned(),
+                    SurvivalRule::SmallDripleaf,
+                ),
+                ("minecraft:tall_grass".to_owned(), SurvivalRule::DoublePlant),
+            ]),
+            ..Default::default()
+        };
+        let tags = BTreeMap::from([
+            (
+                "minecraft:supports_small_dripleaf".to_owned(),
+                vec!["minecraft:grass_block".to_owned()],
+            ),
+            (
+                "minecraft:supports_vegetation".to_owned(),
+                vec!["minecraft:grass_block".to_owned()],
+            ),
+        ]);
+        table(
+            halves_registry(),
+            &HALF_NAMES,
+            &definitions,
+            &tags,
+            BTreeSet::new(),
+        )
     }
 
     /// A level of named blocks under daylight and no fluids: `Rule::Crop` reads the light
@@ -2144,5 +2302,191 @@ mod part_hook_tests {
             &mut TestWorld::new(SEA_PICKLE, SAND),
             SEA_PICKLE
         )));
+    }
+
+    /// A block whose template asks no ground reaches no ground part even with no rule in the
+    /// table: the mod block the table does not cover is unsupported whatever stands under it,
+    /// as a modded torch must be (#17943).
+    #[test]
+    fn a_rule_less_block_whose_template_asks_no_ground_asks_no_part() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        let allow = Asked {
+            state: LANTERN,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(true),
+        };
+        let before = ASKS.load(Ordering::SeqCst);
+        let mut world = TestWorld::new(LANTERN, SAND);
+        assert!(matches!(
+            answers_both(Some(allow), Some(allow), || survival.can_survive(
+                &mut world,
+                LANTERN,
+                PLANT
+            )),
+            Err(SurvivalError::Unsupported(state)) if state == LANTERN
+        ));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before,
+            "a template that asks no ground asks no part"
+        );
+    }
+
+    /// Soul fire shares the vegetation rule but asks no ground: the tag the table holds for
+    /// it decides alone, while a plant of the same rule still asks its parts (#17943).
+    #[test]
+    fn soul_fire_keeps_its_tag_where_a_plant_of_its_rule_asks_the_ground() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let tags = tags();
+        let survival = survival(&tags);
+
+        // The table alone: soul fire stands on its base blocks, not on grass.
+        assert!(survives(
+            &survival,
+            &mut TestWorld::new(SOUL_FIRE, SAND),
+            SOUL_FIRE
+        ));
+        assert!(!survives(
+            &survival,
+            &mut TestWorld::new(SOUL_FIRE, GRASS),
+            SOUL_FIRE
+        ));
+
+        // The parts refuse, and neither is asked: the tag answers.
+        let refuse = Asked {
+            state: SOUL_FIRE,
+            ground: Some(SAND),
+            at: GROUND,
+            answer: Some(false),
+        };
+        let before = ASKS.load(Ordering::SeqCst);
+        assert!(answers_both(Some(refuse), Some(refuse), || survives(
+            &survival,
+            &mut TestWorld::new(SOUL_FIRE, SAND),
+            SOUL_FIRE
+        )));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before,
+            "soul fire asks no ground part"
+        );
+
+        // Short grass, the same rule in a template that asks its ground, is refused by a
+        // part that refuses ground the tag holds.
+        let refuse = Asked {
+            state: SHORT_GRASS,
+            ground: Some(GRASS),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(!answers(&PLACE_ON, refuse, || survives(
+            &survival,
+            &mut TestWorld::new(SHORT_GRASS, GRASS),
+            SHORT_GRASS
+        )));
+    }
+
+    /// The lower halves of small dripleaf and of a double plant ask the ground their templates
+    /// ask before the tags the table holds for them decide; the upper halves keep their check
+    /// on the half below and ask nothing, as the live game has them (`level/survive.rs`).
+    #[test]
+    fn the_lower_halves_of_the_half_plants_ask_the_ground_before_their_tags() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        install_hooks();
+        let survival = halves();
+        let lower = [DRIPLEAF_LOWER, TALL_LOWER];
+
+        // The table alone: the lower halves stand on the grass both tags hold, not on sand.
+        for plant in lower {
+            assert!(survives(
+                &survival,
+                &mut TestWorld::new(plant, GRASS),
+                plant
+            ));
+            assert!(!survives(
+                &survival,
+                &mut TestWorld::new(plant, SAND),
+                plant
+            ));
+        }
+
+        // A ground part's yes stands either of them where no tag holds the ground...
+        for plant in lower {
+            let allow = Asked {
+                state: plant,
+                ground: Some(SAND),
+                at: GROUND,
+                answer: Some(true),
+            };
+            assert!(answers(&PLACE_ON, allow, || survives(
+                &survival,
+                &mut TestWorld::new(plant, SAND),
+                plant
+            )));
+        }
+        // ... its no refuses them ground the tags hold ...
+        for plant in lower {
+            let refuse = Asked {
+                state: plant,
+                ground: Some(GRASS),
+                at: GROUND,
+                answer: Some(false),
+            };
+            assert!(!answers(&PLACE_ON, refuse, || survives(
+                &survival,
+                &mut TestWorld::new(plant, GRASS),
+                plant
+            )));
+        }
+        // ... and the soil's answer is asked first here too.
+        for plant in lower {
+            let soil = Asked {
+                state: plant,
+                ground: Some(SAND),
+                at: GROUND,
+                answer: Some(true),
+            };
+            assert!(answers_both(Some(soil), None, || survives(
+                &survival,
+                &mut TestWorld::new(plant, SAND),
+                plant
+            )));
+        }
+
+        // The upper halves stand on their lower half and ask no part, which refuses here.
+        let before = ASKS.load(Ordering::SeqCst);
+        let refuse = Asked {
+            state: TALL_UPPER,
+            ground: Some(TALL_LOWER),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(answers_both(Some(refuse), Some(refuse), || survives(
+            &survival,
+            &mut TestWorld::new(TALL_UPPER, TALL_LOWER),
+            TALL_UPPER
+        )));
+        let refuse = Asked {
+            state: DRIPLEAF_UPPER,
+            ground: Some(DRIPLEAF_LOWER),
+            at: GROUND,
+            answer: Some(false),
+        };
+        assert!(answers(&PLACE_ON, refuse, || survives(
+            &survival,
+            &mut TestWorld::new(DRIPLEAF_UPPER, DRIPLEAF_LOWER),
+            DRIPLEAF_UPPER
+        )));
+        assert_eq!(
+            ASKS.load(Ordering::SeqCst),
+            before,
+            "the upper halves ask no part"
+        );
     }
 }
