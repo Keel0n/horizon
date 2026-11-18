@@ -73,8 +73,8 @@ impl Game<'_> {
                     .map(|(id, recipe)| (id, recipe)),
             );
         for (id, recipe) in values {
-            let reading = crate::crafting::mod_kinds::recipe_type(id, &recipe.serializer);
-            if let Ok(crate::crafting::mod_kinds::Reading::Type(kind)) = reading
+            if let Ok(crate::crafting::mod_kinds::Reading::Type(kind)) =
+                crate::crafting::mod_kinds::recipe_type(id, &recipe.serializer)
                 && types.contains(&kind)
             {
                 match recipe.written().and_then(|text| {

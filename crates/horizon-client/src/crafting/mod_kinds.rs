@@ -21,7 +21,6 @@ fn source_path(name: &str) -> String {
     format!("data/{namespace}/recipe/{path}.json")
 }
 /// What a recipe file's `type` resolves to before the file is parsed.
-#[derive(Debug)]
 pub enum Reading {
     /// A registered reader: the file is read as this recipe type.
     Type(String),
@@ -303,10 +302,15 @@ pub fn sync_recipe_types(requested: &[String]) -> Vec<String> {
 /// Resolve file serializers to recipe types at the content transport boundary.
 /// A file nothing here reads is not sent.
 pub fn file_has_type(file: &Value, types: &[String]) -> bool {
-    matches!(
-        file["type"]
-            .as_str()
-            .and_then(|id| recipe_type("sync", id).ok()),
-        Some(Reading::Type(kind)) if types.contains(&kind)
-    )
+    matches!(reading(file), Some(Reading::Type(kind)) if types.contains(&kind))
+}
+/// Whether any reader here takes the file's `type`. A file none takes is dropped by the
+/// loader, so it takes no display number either.
+pub fn readable(file: &Value) -> bool {
+    !matches!(reading(file), Some(Reading::Unread))
+}
+fn reading(file: &Value) -> Option<Reading> {
+    file["type"]
+        .as_str()
+        .and_then(|id| recipe_type("sync", id).ok())
 }

@@ -1663,7 +1663,7 @@ impl Recipes {
                         // A carried content mod's own type: no mod here reads
                         // it, so the file is skipped whole.
                         log::error!(
-                            "recipes: {id} skipped: recipe type {serializer} is not registered by any mod"
+                            "recipes: {id} skipped: recipe serializer {serializer} is not registered by any mod"
                         );
                         continue;
                     }
