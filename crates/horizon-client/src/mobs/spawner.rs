@@ -712,8 +712,9 @@ pub fn entity_position(s: Species, at: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// `Vec3.CODEC`: a list of three doubles, clamped as `Entity.load` clamps the
-/// saved position of what a spawner spawns.
+/// `Vec3.CODEC`: a list of three doubles. A spawner's saved `Pos` is a spawn
+/// spot, not a loaded entity: vanilla snaps the spawn to it verbatim
+/// (`BaseSpawner.spawn`), so it stays raw here.
 pub(crate) fn read_pos(tag: Option<&Tag>) -> Option<[f64; 3]> {
     let Tag::List(v) = tag? else {
         return None;
@@ -733,7 +734,7 @@ pub(crate) fn read_pos(tag: Option<&Tag>) -> Option<[f64; 3]> {
             _ => return None,
         };
     }
-    Some(crate::entity_nbt::clamp_loaded_position(out))
+    Some(out)
 }
 
 #[cfg(test)]
@@ -841,14 +842,5 @@ mod tests {
     fn read_pos_accepts_integer_numeric_tags() {
         assert_eq!(read_pos(Some(&tag("[1, 2, 3]"))), Some([1.0, 2.0, 3.0]));
         assert_eq!(read_pos(Some(&tag("[1b, 2s, 3L]"))), Some([1.0, 2.0, 3.0]));
-    }
-
-    /// `Entity.load` clamps the saved spawn position to the world's limits.
-    #[test]
-    fn read_pos_clamps_to_the_world_limits() {
-        assert_eq!(
-            read_pos(Some(&tag("[40000000d, -30000000d, 30000513d]"))),
-            Some([30_000_512.0, -20_000_000.0, 30_000_512.0])
-        );
     }
 }

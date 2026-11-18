@@ -272,6 +272,31 @@ fn read_compound(record: &Value, uuid: u128) -> Result<(Tag, u128), String> {
 const MAX_XZ: f64 = 3.000_051_2e7;
 const MAX_Y: f64 = 2.0e7;
 
+/// The record's saved `Pos` as written: three finite doubles inside the world's
+/// limits. `read_player` clamps the position the way `Entity.load` does, so the
+/// raw values decide whether the record is acceptable at all.
+fn check_raw_position(tag: &Tag) -> Result<(), String> {
+    let Some(Tag::List(list)) = tag.get("Pos") else {
+        return Ok(());
+    };
+    let mut p = [0.0f64; 3];
+    let numeric = list.len() == 3
+        && p.iter_mut().zip(list).all(|(slot, t)| match t {
+            Tag::Double(bits) => {
+                *slot = f64::from_bits(*bits);
+                true
+            }
+            _ => false,
+        });
+    if !numeric || !p.iter().all(|v| v.is_finite()) {
+        return Err("the record's position is not a number".into());
+    }
+    if p[0].abs() > MAX_XZ || p[2].abs() > MAX_XZ || p[1].abs() > MAX_Y {
+        return Err("the record's position is out of the world".into());
+    }
+    Ok(())
+}
+
 /// Refuses a compound whose values no player can have. `Entity.load` throws on a position or
 /// rotation that is not finite; a record comes from another machine, so it is checked rather
 /// than clamped, and a health of zero or less (a dead player) is refused too.
@@ -283,12 +308,6 @@ fn check_values(level: &Level, attributes: &Catalog) -> Result<(), String> {
             Err(format!("the record's {what} is not a number"))
         }
     };
-    if let Some(p) = level.position {
-        finite("position", &p)?;
-        if p[0].abs() > MAX_XZ || p[2].abs() > MAX_XZ || p[1].abs() > MAX_Y {
-            return Err("the record's position is out of the world".into());
-        }
-    }
     finite(
         "rotation",
         &[f64::from(level.rotation[0]), f64::from(level.rotation[1])],
@@ -535,6 +554,7 @@ pub fn import_player(
     {
         return Err("that player's record of another hand-over was imported".into());
     }
+    check_raw_position(&tag)?;
     let mut level = Level::default();
     level.read_player(&tag);
     check_values(&level, attributes)?;
