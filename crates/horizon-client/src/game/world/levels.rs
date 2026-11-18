@@ -2189,7 +2189,7 @@ mod tests {
         let closed_at = game.world.game_time;
         assert_eq!(closed_at, left + LEFT_ALONE, "a tick per idle tick");
         assert!(
-            game.levels.parked.get(&Dim::Nether).is_none(),
+            !game.levels.parked.contains_key(&Dim::Nether),
             "closed for being idle"
         );
         // What the close wrote, read from the level's own folder before the
