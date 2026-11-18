@@ -130,13 +130,20 @@ impl Game<'_> {
         partial: f32,
     ) -> Option<horizon_client::gfx::BorderDraw> {
         use horizon_client::border_render::{self, BorderRenderer};
-        // The wall and its fade span the full-detail radius, as vanilla's
-        // `LevelRenderer` and `Camera` derive them, never the far-terrain LOD
-        // distance: the wall's texture coordinates are f32, and at LOD depths
-        // one ulp of the v coordinate is wider than a whole texture tile, so
-        // the forcefield striping collapses into moiré. The wall therefore
-        // ends inside the world far terrain draws, before its fog.
-        let distance = f64::from(self.streaming.radius * 16);
+        // The wall and its fade span vanilla's effective render distance: the
+        // option, capped by the server's view distance once a login reports one
+        // (`Options.getEffectiveRenderDistance`). The streaming radius keeps its
+        // own one-chunk margin for the chunk cache, and the far-terrain LOD
+        // distance lengthens only the drawn world: the border inherits neither,
+        // as its texture coordinates are f32 and at LOD depths one ulp of the v
+        // coordinate is wider than a whole texture tile.
+        let radius = border_radius(
+            self.settings.render_distance,
+            self.remote
+                .as_ref()
+                .map_or(0, |remote| remote.server_render_distance()),
+        );
+        let distance = f64::from(radius * 16);
         border_render::extract(
             &self.border,
             partial,
@@ -152,8 +159,7 @@ impl Game<'_> {
             self.border_section = Some(section);
         }
         // `Camera.depthFar`, from the same radius, caps the wall's height.
-        let depth_far =
-            horizon_client::camera::depth_far(self.streaming.radius, self.settings.cloud_range);
+        let depth_far = horizon_client::camera::depth_far(radius, self.settings.cloud_range);
         if !self
             .border_renderer
             .prepare(&self.border_state, camera, distance, depth_far)
@@ -169,6 +175,30 @@ impl Game<'_> {
                 .transforms(&self.border_state, camera, millis),
             sides: BorderRenderer::sides(&self.border_state, camera, distance),
         })
+    }
+}
+
+/// `Options.getEffectiveRenderDistance`: once a login has reported the server's
+/// view distance (`serverRenderDistance > 0`), it caps the render distance
+/// option; until then the option stands.
+fn border_radius(option: i32, server: i32) -> i32 {
+    if server > 0 {
+        option.min(server)
+    } else {
+        option
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The reported server view distance caps the option, and only a reported
+    /// one does (`Options.getEffectiveRenderDistance`).
+    #[test]
+    fn the_border_radius_is_vanillas_effective_render_distance() {
+        assert_eq!(super::border_radius(32, 8), 8);
+        assert_eq!(super::border_radius(8, 32), 8);
+        assert_eq!(super::border_radius(16, 0), 16);
+        assert_eq!(super::border_radius(16, -1), 16);
     }
 }
 
