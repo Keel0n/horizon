@@ -491,7 +491,8 @@ impl SpawnerExt for Spawner {
                 return;
             };
             let at = match read_pos(data.entity.get(&JavaString::from("Pos"))) {
-                Some(p) => p,
+                // `Entity.load` clamps the saved position of what it spawns.
+                Some(p) => crate::entity_nbt::clamp_loaded_position(p),
                 None => {
                     let range = f64::from(self.spawn_range);
                     let x = f64::from(pos[0])

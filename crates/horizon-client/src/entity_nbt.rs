@@ -89,8 +89,21 @@ fn hidden_effect_from_nbt(effect: &'static str, tag: &Tag) -> crate::effects::Ef
 pub fn kind(tag: &Tag) -> Option<String> {
     horizon_client_core::identifier::normalize_id(&text(tag.get("id"))?)
 }
+/// The clamp `Entity.load` applies to every saved position: ±3.0000512E7 on x
+/// and z, ±2.0E7 on y.
+pub fn clamp_loaded_position(p: [f64; 3]) -> [f64; 3] {
+    [
+        p[0].clamp(-30_000_512.0, 30_000_512.0),
+        p[1].clamp(-20_000_000.0, 20_000_000.0),
+        p[2].clamp(-30_000_512.0, 30_000_512.0),
+    ]
+}
+/// `Entity.load`'s `Pos`: the saved coordinates, clamped to the world's limits.
 pub fn position(tag: &Tag) -> Option<Vec3> {
-    read_doubles::<3>(tag.get("Pos")).map(|p| Vec3::new(p[0], p[1], p[2]))
+    read_doubles::<3>(tag.get("Pos")).map(|p| {
+        let p = clamp_loaded_position(p);
+        Vec3::new(p[0], p[1], p[2])
+    })
 }
 pub fn uuid(tag: &Tag) -> Option<[i32; 4]> {
     uuid_from_tag(tag.get("UUID"))
@@ -4349,6 +4362,28 @@ mod spell_ticks_nbt_tests;
 
 #[cfg(test)]
 mod tests {
+    /// `Entity.load` clamps the saved `Pos` to ±3.0000512E7 on x and z and
+    /// ±2.0E7 on y before placing the entity; every load path reads the
+    /// position through `position`, so one clamp covers them all.
+    #[test]
+    fn a_saved_position_loads_clamped_to_the_world_limits() {
+        let at = |pos: [f64; 3]| {
+            let list = horizon_core::nbt::Tag::List(
+                pos.map(|v| horizon_core::nbt::Tag::Double(v.to_bits())).to_vec(),
+            );
+            super::position(&horizon_core::nbt::Tag::compound([("Pos", list)])).unwrap()
+        };
+        assert_eq!(
+            at([40_000_000.0, -30_000_000.0, 3.0000512e7]),
+            horizon_core::geometry::Vec3::new(30_000_512.0, -20_000_000.0, 30_000_512.0)
+        );
+        // What vanilla writes itself reads back as it was.
+        assert_eq!(
+            at([8.5, 64.0, -2.5]),
+            horizon_core::geometry::Vec3::new(8.5, 64.0, -2.5)
+        );
+    }
+
     /// `ItemEntity.readAdditionalSaveData` reads `Age` and `PickupDelay` with
     /// `getShortOr`: an int tag is narrowed (`IntTag.shortValue`,
     /// `(short)(value & 65535)`), so 40000 is -25536 and 65536 is 0.

@@ -354,7 +354,8 @@ fn record_from_compound(tag: &Tag) -> Result<GeneralEntityRecord, GeneralRecordE
             field: format::TYPE,
         });
     };
-    let position = doubles3(tag, format::POSITION)?;
+    // `Entity.load` clamps the saved position to the world's limits.
+    let position = crate::entity_nbt::clamp_loaded_position(doubles3(tag, format::POSITION)?);
     let velocity = doubles3(tag, format::VELOCITY)?;
     let rotation = match tag.get(format::ROTATION) {
         None => [0.0; 2],
