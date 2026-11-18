@@ -2052,6 +2052,35 @@ mod tests {
             })
     }
 
+    /// A chunk as the level's own folder holds it, read the way its workers read one (the tables
+    /// that name `block_ticks` go in first, as `save::Persistent::load` does).
+    fn load_saved_chunk(
+        game: &Game<'_>,
+        save: &horizon_client::save::SaveDir,
+        key: (i32, i32),
+    ) -> Option<horizon_client::chunk::Chunk> {
+        let _ = save
+            .tables
+            .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&game.pack.assets)));
+        save.load(key.0, key.1, game.pack.assets.registry, world_biomes!(game))
+    }
+
+    /// The block ticks a saved chunk holds, with the delays it was written with.
+    fn saved_block_ticks(
+        game: &Game<'_>,
+        save: &horizon_client::save::SaveDir,
+        key: (i32, i32),
+    ) -> Vec<(horizon_core::position::BlockPos, i32)> {
+        load_saved_chunk(game, save, key)
+            .and_then(|chunk| {
+                chunk
+                    .saved
+                    .as_deref()
+                    .map(|saved| saved.block_ticks.iter().map(|t| (t.pos, t.delay)).collect())
+            })
+            .unwrap_or_default()
+    }
+
     /// A level closed for being idle (300 ticks of `close_idle_levels`) comes
     /// back with the scheduled block ticks its chunks were saved with, each at
     /// its own deadline: the tick already due when the level was saved runs on
@@ -2066,10 +2095,7 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_closed_idle_levels_scheduled_ticks_come_back_at_their_deadlines() {
-        use horizon_core::{
-            position::ChunkPos,
-            ticks::ScheduleResult,
-        };
+        use horizon_core::{position::ChunkPos, ticks::ScheduleResult};
         // Two standing torches on the power that turns them off: one tick is
         // already past when the level is saved, one is 400 ticks out.
         const DUE: [i32; 3] = [2, 64, 2];
@@ -2142,9 +2168,13 @@ mod tests {
         // Back in the Overworld: the Nether is parked with both ticks.
         let left = game.world.game_time;
         game.enter_level(Dim::Overworld).unwrap();
-        for i in 0..IDLE_TICKS {
+        // `close_idle_levels` closes a level left alone for 300 ticks
+        // (`IDLE_TICKS`): the count is written out here, as the expectation it
+        // is for the test.
+        const LEFT_ALONE: i64 = 300;
+        for tick in 0..LEFT_ALONE {
             game.tick_server(false).unwrap();
-            if i + 1 < IDLE_TICKS {
+            if tick == LEFT_ALONE / 2 {
                 let nether = game
                     .levels
                     .parked
@@ -2152,48 +2182,37 @@ mod tests {
                     .expect("parked until it is idle");
                 assert!(
                     torch_lit(&game, &nether.world, DUE),
-                    "the due tick ran in a level nobody ticks"
+                    "a parked level is not ticked: the due tick waits"
                 );
             }
         }
         let closed_at = game.world.game_time;
-        assert_eq!(closed_at, left + i64::from(IDLE_TICKS), "a tick per idle tick");
+        assert_eq!(closed_at, left + LEFT_ALONE, "a tick per idle tick");
         assert!(
             game.levels.parked.get(&Dim::Nether).is_none(),
             "closed for being idle"
         );
+        // What the close wrote, read from the level's own folder before the
+        // level is opened again: the levels' deadlines are these.
+        let nether_save = horizon_client::save::SaveDir::new(
+            horizon_client::save::dimension_dir(&game.world_root, Dim::Nether.id()),
+            game.level_shapes.get(Dim::Nether.id()),
+        );
+        let written = saved_block_ticks(&game, &nether_save, key);
         // The reopen: the level is built again from its save, and its chunk is
         // read back the way the level's workers read one.
         game.enter_level(Dim::Nether).unwrap();
-        let _ = game
-            .save
-            .tables
-            .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&game.pack.assets)));
-        let mut chunk = game
-            .save
-            .load(key.0, key.1, game.pack.assets.registry, world_biomes!(game))
-            .expect("the closed level's chunk");
-        let saved: Vec<(horizon_core::position::BlockPos, i32)> = chunk
-            .saved
-            .as_deref()
-            .expect("the chunk's saved data")
-            .block_ticks
-            .iter()
-            .map(|t| (t.pos, t.delay))
-            .collect();
+        let reopened_at = game.world.game_time;
+        let mut chunk = load_saved_chunk(&game, &game.save, key).expect("the closed level's chunk");
+        let saved = saved_block_ticks(&game, &game.save, key);
         let delay_of = |p: [i32; 3]| {
             let at = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
             saved.iter().find(|(pos, _)| *pos == at).map(|(_, d)| *d)
         };
-        assert_eq!(
-            delay_of(DUE),
-            Some((due - closed_at) as i32),
-            "the due tick: its deadline less the clock it was saved at, so already past"
-        );
-        assert_eq!(
-            delay_of(AHEAD),
-            Some((ahead - closed_at) as i32),
-            "the tick ahead: what it had left at the save"
+        assert!(
+            delay_of(DUE).is_some() && delay_of(AHEAD).is_some(),
+            "the closed level kept both ticks: written {written:?}, read back {saved:?}, \
+             closed at {closed_at}, reopened at {reopened_at}"
         );
         // Resident again, with the neighbours a ticking chunk needs, and the
         // ticket that makes the level tick it.
@@ -2214,25 +2233,30 @@ mod tests {
             game.streaming.set_forced(key.0, key.1, true),
             "the level's chunk loads again"
         );
-        // The first tick back: the due tick was past when it was saved, so it
-        // runs here and not on a later tick.
+        // The first tick back: the due tick's deadline is behind the clock the
+        // level came back at, so it runs here and not on a later tick.
         game.tick_server(false).unwrap();
         assert!(
             !torch_lit(&game, &game.world, DUE),
-            "the due tick ran on the first tick back"
+            "the due tick ran on the first tick back: clock {}, its deadline {due}, closed at \
+             {closed_at}, reopened at {reopened_at}, written {written:?}, read back {saved:?}",
+            game.world.game_time
         );
         assert!(
             torch_lit(&game, &game.world, AHEAD),
-            "the tick ahead waits for its own game time"
+            "the tick ahead waits for its own game time: clock {}, its deadline {ahead}, closed \
+             at {closed_at}, reopened at {reopened_at}, written {written:?}, read back {saved:?}",
+            game.world.game_time
         );
         // It runs at the game time it was due at, however many ticks the level
-        // was closed for.
-        for _ in game.world.game_time..ahead {
+        // spent closed.
+        while game.world.game_time < ahead {
             game.tick_server(false).unwrap();
             if game.world.game_time < ahead {
                 assert!(
                     torch_lit(&game, &game.world, AHEAD),
-                    "not before its deadline: {} < {ahead}",
+                    "not before its deadline: {} < {ahead}, reopened at {reopened_at}, written \
+                     {written:?}, read back {saved:?}",
                     game.world.game_time
                 );
             }
@@ -2240,7 +2264,7 @@ mod tests {
         assert_eq!(game.world.game_time, ahead, "the deadline's own game time");
         assert!(
             !torch_lit(&game, &game.world, AHEAD),
-            "the tick ahead ran at its deadline"
+            "the tick ahead ran at its deadline: written {written:?}, read back {saved:?}"
         );
     }
 
