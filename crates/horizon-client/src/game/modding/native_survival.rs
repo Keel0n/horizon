@@ -169,6 +169,18 @@ mod tests {
             Some(event.ground.block() == self.0)
         }
     }
+    /// A soil that refuses every plant, on a block of the game's.
+    struct RefusingSoil;
+    #[mod_api::horizon_part]
+    impl BlockPart for RefusingSoil {
+        fn can_sustain_plant_v2(
+            &self,
+            _: &dyn WorldgenHost,
+            _: &mut CanSustainPlantV2Event,
+        ) -> Option<bool> {
+            Some(false)
+        }
+    }
     struct Standing;
     #[mod_api::__subscriptions]
     impl Hooks for Standing {
@@ -178,6 +190,7 @@ mod tests {
             let grass = r.block_key("minecraft:grass_block");
             r.block_part(crystal, Crystal(end_stone));
             r.block_part(grass, Soil(grass));
+            r.block_part(end_stone, RefusingSoil);
         }
     }
 
@@ -256,16 +269,18 @@ mod tests {
     #[test]
     fn a_soil_answers_the_plant_above_it() {
         with_published(|| {
-            // The soil's own parts answer for the plant standing on it.
+            // The parts asked are the planted-on block's: the mod's own soil answers for the
+            // plant standing on it.
             let mut sustains = None;
             can_sustain_plant_v2(CRYSTAL, GRASS, [0, 63, 0], &mut sustains);
             assert_eq!(sustains, Some(true), "the mod's own soil");
+            // A soil of the mod's on a block of the game's refuses the plant.
             let mut sustains = None;
             can_sustain_plant_v2(CRYSTAL, END_STONE, [0, 63, 0], &mut sustains);
-            assert_eq!(sustains, Some(false), "a soil of the mod's that refuses");
+            assert_eq!(sustains, Some(false), "a soil that refuses every plant");
             // A soil no part answers for keeps the plant's own rule.
             let mut sustains = None;
-            can_sustain_plant_v2(END_STONE, END_STONE, [0, 63, 0], &mut sustains);
+            can_sustain_plant_v2(END_STONE, CRYSTAL, [0, 63, 0], &mut sustains);
             assert_eq!(sustains, None);
         });
     }
