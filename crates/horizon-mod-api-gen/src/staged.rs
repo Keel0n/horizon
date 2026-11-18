@@ -27,6 +27,9 @@ pub fn staged_mods(root: &Path) -> Vec<String> {
 }
 
 /// The hooks a mob's turn calls and waits on (the parallel mob tick, `game/creatures/mob_islands.rs`).
+/// Names are those of the declarations in `horizon-mod-vocab/src/hooks/`, without the `native_`
+/// prefix: an injection names the game function it runs in, and `native_<name>` is that function for
+/// a hook point, whatever `version` its declaration carries.
 const MOB_TURN: &[&str] = &[
     "living_change_target",
     "living_heal",
@@ -34,28 +37,76 @@ const MOB_TURN: &[&str] = &[
     "living_breathe",
     "living_drown",
     "living_fall",
-    "register_goals",
     "living_incoming_damage",
-    "living_incoming_damage_v2",
-    "living_incoming_damage_v3",
     "living_damage_pre",
     "living_knockback",
-    "living_knockback_v2",
     // Called from a mob's move: farmland it falls on, a content mod's blocks it touches.
     "trample",
     "block_step_on",
-    "block_entity_inside",
-    "block_fall_on",
+    // Called from that move's own physics: the surface under it, the speeds it travels with, the
+    // fluid that pushes it, the ladder it climbs, and the sound its step makes.
+    "friction",
+    "block_speed_factor",
+    "block_jump_factor",
+    "is_ladder",
+    "makes_open_trapdoor_above_climbable",
+    "living_speed",
+    "living_jump_power",
+    "living_flying_speed",
+    "fluid_flow",
+    "sound_type",
+    // Called from an enderman's or a shulker's own teleport, in its AI step.
+    "ender_entity_teleport",
 ];
 /// The hooks a mob's turn calls without waiting: a trait mod hears them after the loop, but a
 /// mixin into them still runs in the turn.
 const MOB_TURN_QUEUED: &[&str] = &["living_jump", "living_damage_post"];
 
+/// The path prefixes of the modules a mob's turn never runs, so that a mixin into one of them
+/// leaves the parallel tick on. The rule, not a history: the turn reads the level's blocks, moves
+/// through it and hears its mods, so a module it can reach — and every module not named here, an
+/// unknown crate's included — keeps the tick serial, while the error made of a module wrongly
+/// listed costs simulation order, not parallelism. A prefix matches a module and its descendants,
+/// never a sibling whose name starts the same way.
+const OUTSIDE_A_MOB_TURN: &[&str] = &[
+    // The client's drawing: the frame's own passes, HUD, widgets and shared screen drawing, and the
+    // settings and options screens. Drawn while the window renders, after its tick.
+    "horizon_client_render::gfx",
+    "horizon_client_render::hud",
+    "horizon_client_render::options_ui",
+    "horizon_client_render::screen_draw",
+    "horizon_client_render::ui",
+    // The wire: codecs, framing, encryption and the packets. The turn builds nothing into a
+    // packet: a mob's news leaves it as an event, and the level sends it after the loop.
+    "horizon_protocol",
+    // The rest of `horizon_client_render` is not here on purpose, though most of it is drawing:
+    // the turn reads that crate's world data (`world`), moves through its `collisions`, draws the
+    // level's random for its `fast_hash` maps and `spans`, and every part hook's forwarder reads
+    // its `api_context`. A mixin into those runs in the turn like any other.
+];
+
+/// Whether the vanilla game function `target` — a mixin target, `crate::module::Type::method` — is
+/// one a mob's turn can run.
+fn in_a_mob_turn(target: &str) -> bool {
+    let function = target.rsplit("::").next().unwrap_or_default();
+    match function.strip_prefix("native_") {
+        // A hook point: only the hooks the turn calls itself, waiting on them or not.
+        Some(hook) => MOB_TURN.contains(&hook) || MOB_TURN_QUEUED.contains(&hook),
+        // Any other function of the game: it runs in the turn unless its module never does.
+        None => !OUTSIDE_A_MOB_TURN.iter().any(|prefix| {
+            target
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+        }),
+    }
+}
+
 /// Whether the native mods built into the workspace at `root` can run code in a mob's turn:
-/// `"hooked"` when a mixin injects into anything but a `native_*` hook point outside that turn, or
-/// a trait package (`native-api/`, with its crates in `native-crates/`, as the launcher stages
-/// them) has a function named for a hook the turn waits on; `"quiet"` when trait packages were
-/// staged and nothing hooks; None when no trait package was staged and no mixin hooks.
+/// `"hooked"` when a mixin injects into a function that turn runs ([`in_a_mob_turn`]: a hook point
+/// it calls, or any other function of a module it can reach), or a trait package (`native-api/`,
+/// with its crates in `native-crates/`, as the launcher stages them) has a function named for a
+/// hook the turn waits on; `"quiet"` when trait packages were staged and nothing hooks; None when
+/// no trait package was staged and no mixin hooks.
 pub fn mob_turn(root: &Path) -> Option<&'static str> {
     // A record without a target conservatively serializes mob turns; only a known hook
     // outside the turn can leave parallelism enabled.
@@ -63,13 +114,8 @@ pub fn mob_turn(root: &Path) -> Option<&'static str> {
         let record = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
         let injections = record["injections"].as_array();
         let hooked = injections.is_none_or(|list| {
-            list.iter().any(|injection| {
-                let target = injection["target"].as_str().unwrap_or_default();
-                let function = target.rsplit("::").next().unwrap_or_default();
-                function
-                    .strip_prefix("native_")
-                    .is_none_or(|hook| MOB_TURN.contains(&hook) || MOB_TURN_QUEUED.contains(&hook))
-            })
+            list.iter()
+                .any(|injection| in_a_mob_turn(injection["target"].as_str().unwrap_or_default()))
         });
         if hooked {
             return Some("hooked");
@@ -180,7 +226,29 @@ mod tests {
                 "horizon_client_lib::motion::native_living_jump",
                 Some("hooked"),
             ),
+            (
+                "move",
+                "horizon_client_lib::motion::native_friction",
+                Some("hooked"),
+            ),
             ("any", "horizon_client::mobs::ai::tick", Some("hooked")),
+            // A screen is drawn in the window's frame, after its tick: hooking one leaves the
+            // mobs' turns parallel.
+            (
+                "screen",
+                "horizon_client_render::options_ui::OptionsUi::draw",
+                None,
+            ),
+            // A packet's codec runs when the level sends it, not in a mob's turn.
+            ("wire", "horizon_protocol::frame::decompress", None),
+            // The rest of the render crate is a module a mob's turn does reach, so a mixin into
+            // it keeps the tick serial like any other unknown one.
+            (
+                "render world",
+                "horizon_client_render::world::World::block",
+                Some("hooked"),
+            ),
+            ("unknown", "some_mod::patches::apply", Some("hooked")),
         ] {
             let dir = workspace(name, Some(&record(target)));
             assert_eq!(mob_turn(&dir), found, "{name}");
