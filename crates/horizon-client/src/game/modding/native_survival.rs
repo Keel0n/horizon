@@ -1,24 +1,25 @@
 // game-module-visibility: pub(crate)
-//! The engine side of `can_survive` and `may_place_on`: the two survival questions a feature
-//! asks while it places a block, and the live game asks when a block is placed or a plant's
-//! ground changes. Both ask the parts of the state's block on the worldgen workers and on the
-//! server thread alike, reading what the server published (`native_worldgen_parts`), so a
-//! feature and a player get one answer (#17943).
+//! The engine side of `can_survive_v2`, `may_place_on_v2` and `can_sustain_plant_v2`: the
+//! survival questions a feature asks while it places a block in world generation. They ask the
+//! parts of the state's block (and of a plant's soil) on the worldgen workers and on the server
+//! thread alike, reading what the server published (`native_worldgen_parts`), so a feature and a
+//! player get one answer (#17943). A hand placement still goes through the published
+//! `can_survive`, `may_place_on` and `can_sustain_plant`, which read the level.
 use super::native_worldgen_parts;
 use horizon_world::registry::BlockStateId as EngineState;
 use mod_api::HookId;
 
-/// The engine's `can_survive` callback: the parts' answer for `state` at `pos`, `Some`
+/// The engine's `can_survive_v2` callback: the parts' answer for `state` at `pos`, `Some`
 /// replacing the block's own rule and `None` leaving it to vanilla. Nothing is read or
 /// converted while no part answers the hook; a panicking part keeps the block's own rule.
-pub(crate) fn can_survive(state: EngineState, pos: [i32; 3], survives: &mut Option<bool>) {
-    if !mod_api::__private::has_part_hook(HookId::CanSurvive) {
+pub(crate) fn can_survive_v2(state: EngineState, pos: [i32; 3], survives: &mut Option<bool>) {
+    if !mod_api::__private::has_part_hook(HookId::CanSurviveV2) {
         return;
     }
     let Some(index) = native_worldgen_parts::index() else {
         return;
     };
-    if !index.worldgen_listens(HookId::CanSurvive, state) {
+    if !index.worldgen_listens(HookId::CanSurviveV2, state) {
         return;
     }
     let Ok(asked) = index.to_api(state) else {
@@ -27,7 +28,7 @@ pub(crate) fn can_survive(state: EngineState, pos: [i32; 3], survives: &mut Opti
     let mut answer = None;
     if let Err(error) = horizon_client::crash::contain(|| {
         native_worldgen_parts::with_host(|host| {
-            mod_api::world::survival::native_can_survive(
+            mod_api::world::survival::native_can_survive_v2(
                 host,
                 mod_api::BlockPos::new(pos[0], pos[1], pos[2]),
                 asked,
@@ -35,27 +36,28 @@ pub(crate) fn can_survive(state: EngineState, pos: [i32; 3], survives: &mut Opti
             );
         });
     }) {
-        log::warn!("can_survive callback failed: {error}; the block keeps its own rule");
+        log::warn!("can_survive_v2 callback failed: {error}; the block keeps its own rule");
         return;
     }
     *survives = answer;
 }
 
-/// The engine's `may_place_on` callback: the parts' answer for the plant `state` on `ground`
-/// at `ground_pos`, `Some` replacing the plant's own rule. Asked and contained as `can_survive`.
-pub(crate) fn may_place_on(
+/// The engine's `may_place_on_v2` callback: the parts' answer for the plant `state` on `ground`
+/// at `ground_pos`, `Some` replacing the plant's own rule. Asked and contained as
+/// `can_survive_v2`.
+pub(crate) fn may_place_on_v2(
     state: EngineState,
     ground: EngineState,
     ground_pos: [i32; 3],
     may: &mut Option<bool>,
 ) {
-    if !mod_api::__private::has_part_hook(HookId::MayPlaceOn) {
+    if !mod_api::__private::has_part_hook(HookId::MayPlaceOnV2) {
         return;
     }
     let Some(index) = native_worldgen_parts::index() else {
         return;
     };
-    if !index.worldgen_listens(HookId::MayPlaceOn, state) {
+    if !index.worldgen_listens(HookId::MayPlaceOnV2, state) {
         return;
     }
     let (Ok(asked), Ok(on)) = (index.to_api(state), index.to_api(ground)) else {
@@ -64,7 +66,7 @@ pub(crate) fn may_place_on(
     let mut answer = None;
     if let Err(error) = horizon_client::crash::contain(|| {
         native_worldgen_parts::with_host(|host| {
-            mod_api::world::survival::native_may_place_on(
+            mod_api::world::survival::native_may_place_on_v2(
                 host,
                 asked,
                 on,
@@ -73,10 +75,50 @@ pub(crate) fn may_place_on(
             );
         });
     }) {
-        log::warn!("may_place_on callback failed: {error}; the plant keeps its own rule");
+        log::warn!("may_place_on_v2 callback failed: {error}; the plant keeps its own rule");
         return;
     }
     *may = answer;
+}
+
+/// The engine's `can_sustain_plant_v2` callback: the soil `ground`'s parts answer for the plant
+/// `state` above it at `ground_pos`, `Some` replacing the plant's own rule. The parts asked are
+/// the soil's, so the subscription is looked up on `ground`. Asked and contained as
+/// `can_survive_v2`.
+pub(crate) fn can_sustain_plant_v2(
+    state: EngineState,
+    ground: EngineState,
+    ground_pos: [i32; 3],
+    sustains: &mut Option<bool>,
+) {
+    if !mod_api::__private::has_part_hook(HookId::CanSustainPlantV2) {
+        return;
+    }
+    let Some(index) = native_worldgen_parts::index() else {
+        return;
+    };
+    if !index.worldgen_listens(HookId::CanSustainPlantV2, ground) {
+        return;
+    }
+    let (Ok(asked), Ok(on)) = (index.to_api(state), index.to_api(ground)) else {
+        return;
+    };
+    let mut answer = None;
+    if let Err(error) = horizon_client::crash::contain(|| {
+        native_worldgen_parts::with_host(|host| {
+            mod_api::world::survival::native_can_sustain_plant_v2(
+                host,
+                asked,
+                on,
+                mod_api::BlockPos::new(ground_pos[0], ground_pos[1], ground_pos[2]),
+                &mut answer,
+            );
+        });
+    }) {
+        log::warn!("can_sustain_plant_v2 callback failed: {error}; the plant keeps its own rule");
+        return;
+    }
+    *sustains = answer;
 }
 
 #[cfg(test)]
@@ -86,7 +128,8 @@ mod tests {
     use horizon_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
     use horizon_world::registry::BlockRegistry;
     use mod_api::{
-        BlockKey, BlockPart, CanSurviveEvent, Hooks, MayPlaceOnEvent, ModEntry, Mods, WorldgenHost,
+        BlockKey, BlockPart, CanSustainPlantV2Event, CanSurviveV2Event, Hooks, MayPlaceOnV2Event,
+        ModEntry, Mods, WorldgenHost,
     };
     use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, PoisonError};
@@ -103,10 +146,26 @@ mod tests {
     struct Crystal(BlockKey);
     #[mod_api::horizon_part]
     impl BlockPart for Crystal {
-        fn can_survive(&self, _: &dyn WorldgenHost, _: &mut CanSurviveEvent) -> Option<bool> {
+        fn can_survive_v2(&self, _: &dyn WorldgenHost, _: &mut CanSurviveV2Event) -> Option<bool> {
             Some(true)
         }
-        fn may_place_on(&self, _: &dyn WorldgenHost, event: &mut MayPlaceOnEvent) -> Option<bool> {
+        fn may_place_on_v2(
+            &self,
+            _: &dyn WorldgenHost,
+            event: &mut MayPlaceOnV2Event,
+        ) -> Option<bool> {
+            Some(event.ground.block() == self.0)
+        }
+    }
+    /// A mod's soil: it holds a plant standing on it.
+    struct Soil(BlockKey);
+    #[mod_api::horizon_part]
+    impl BlockPart for Soil {
+        fn can_sustain_plant_v2(
+            &self,
+            _: &dyn WorldgenHost,
+            event: &mut CanSustainPlantV2Event,
+        ) -> Option<bool> {
             Some(event.ground.block() == self.0)
         }
     }
@@ -116,7 +175,9 @@ mod tests {
         fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
             let crystal = r.block_key("mymod:crystal");
             let end_stone = r.block_key("minecraft:end_stone");
+            let grass = r.block_key("minecraft:grass_block");
             r.block_part(crystal, Crystal(end_stone));
+            r.block_part(grass, Soil(grass));
         }
     }
 
@@ -163,15 +224,15 @@ mod tests {
     fn a_part_answers_whether_its_block_survives() {
         with_published(|| {
             let mut survives = None;
-            can_survive(CRYSTAL, [0, 64, 0], &mut survives);
+            can_survive_v2(CRYSTAL, [0, 64, 0], &mut survives);
             assert_eq!(survives, Some(true), "the mod's own block");
             // A block no part answers for keeps the game's own rule.
             let mut survives = None;
-            can_survive(GRASS, [0, 64, 0], &mut survives);
+            can_survive_v2(GRASS, [0, 64, 0], &mut survives);
             assert_eq!(survives, None);
             // A state the published tables do not have is not converted.
             let mut survives = None;
-            can_survive(EngineState(u32::MAX), [0, 64, 0], &mut survives);
+            can_survive_v2(EngineState(u32::MAX), [0, 64, 0], &mut survives);
             assert_eq!(survives, None);
         });
     }
@@ -180,15 +241,32 @@ mod tests {
     fn a_plant_answers_the_ground_it_stands_on() {
         with_published(|| {
             let mut may = None;
-            may_place_on(CRYSTAL, END_STONE, [0, 63, 0], &mut may);
+            may_place_on_v2(CRYSTAL, END_STONE, [0, 63, 0], &mut may);
             assert_eq!(may, Some(true), "end stone under the mod's plant");
             let mut may = None;
-            may_place_on(CRYSTAL, GRASS, [0, 63, 0], &mut may);
+            may_place_on_v2(CRYSTAL, GRASS, [0, 63, 0], &mut may);
             assert_eq!(may, Some(false), "grass under the mod's plant");
             // The ground is asked of the plant's parts, not of the ground block's.
             let mut may = None;
-            may_place_on(GRASS, END_STONE, [0, 63, 0], &mut may);
+            may_place_on_v2(GRASS, END_STONE, [0, 63, 0], &mut may);
             assert_eq!(may, None);
+        });
+    }
+
+    #[test]
+    fn a_soil_answers_the_plant_above_it() {
+        with_published(|| {
+            // The soil's own parts answer for the plant standing on it.
+            let mut sustains = None;
+            can_sustain_plant_v2(CRYSTAL, GRASS, [0, 63, 0], &mut sustains);
+            assert_eq!(sustains, Some(true), "the mod's own soil");
+            let mut sustains = None;
+            can_sustain_plant_v2(CRYSTAL, END_STONE, [0, 63, 0], &mut sustains);
+            assert_eq!(sustains, Some(false), "a soil of the mod's that refuses");
+            // A soil no part answers for keeps the plant's own rule.
+            let mut sustains = None;
+            can_sustain_plant_v2(END_STONE, END_STONE, [0, 63, 0], &mut sustains);
+            assert_eq!(sustains, None);
         });
     }
 }

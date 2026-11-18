@@ -621,9 +621,7 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn before_can_survive(&self, pos: BlockPos, state: BlockStateId, survives: &mut Option<bool>) {
         if self.native_authoritative {
-            // The parts' answer, asked through the tables the server published for its world
-            // generation too: a feature placing this state gets the same answer (#17943).
-            crate::game::native_survival::can_survive(state, [pos.x, pos.y, pos.z], survives);
+            self.native_can_survive(self.dimension, pos, state, survives);
         }
     }
     fn before_can_sustain_plant(
@@ -670,12 +668,7 @@ impl LevelAccess for GameLevel<'_> {
         may: &mut Option<bool>,
     ) {
         if self.native_authoritative {
-            crate::game::native_survival::may_place_on(
-                state,
-                ground,
-                [ground_pos.x, ground_pos.y, ground_pos.z],
-                may,
-            );
+            self.native_may_place_on(self.dimension, state, ground, ground_pos, may);
         }
     }
     fn is_client_side(&self) -> bool {
