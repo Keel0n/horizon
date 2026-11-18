@@ -3,6 +3,8 @@
 //! the client, deep comparison and all.
 use super::*;
 use crate::lan::menu::{Menu, Slots};
+use horizon_protocol::buf::Codec;
+use horizon_protocol::item::{Component, Template, component};
 
 /// A shulker box holding 27 stacks of its own: copying it copies all of them,
 /// which is what the sync used to do for every slot of every guest every tick.
@@ -34,6 +36,28 @@ fn ender_menu(window: i32) -> Menu {
         links: Vec::new(),
         asks_still_valid: false,
     }
+}
+
+/// What a shulker's `minecraft:container` component holds, as the packet
+/// carries it: each filled slot and the count it was sent with. `None` when
+/// the stack goes out without its contents.
+fn shulker_contents(item: &horizon_protocol::item::Stack) -> Option<Vec<(usize, i32)>> {
+    let (_, contents) = item
+        .added
+        .iter()
+        .find(|(kind, _)| *kind == component::CONTAINER)?;
+    let Component::Raw(bytes) = contents else {
+        return None;
+    };
+    let mut reader = horizon_protocol::buf::Reader::new(bytes);
+    let mut slots = Vec::new();
+    for slot in 0..reader.count(256).ok()? {
+        if reader.bool().ok()? {
+            let stack: horizon_protocol::item::Stack = Template::read(&mut reader).ok()?;
+            slots.push((slot, stack.count));
+        }
+    }
+    Some(slots)
 }
 
 /// The `ContainerSetSlot` packets the guest was sent since the last drain.
@@ -105,9 +129,13 @@ fn the_inventory_menu_syncs_the_slots_that_changed_and_no_others() {
         .as_ref()
         .expect("the whole stack, its contents with it");
     assert_eq!(item.count, 1);
-    assert!(
-        !item.added.is_empty(),
-        "the shulker's contents travel in the packet"
+    let expected: Vec<(usize, i32)> = (0..27)
+        .map(|slot| (slot, if slot == 3 { 7 } else { 100 + slot as i32 }))
+        .collect();
+    assert_eq!(
+        shulker_contents(item).expect("the shulker's contents travel in the packet"),
+        expected,
+        "the contents the shulker holds now, the changed one among them"
     );
     hub.sync_player_state(0);
     assert!(slots_sent(&rx).is_empty(), "and only once");
@@ -166,12 +194,17 @@ fn an_open_container_syncs_the_slots_that_changed_and_no_others() {
         (before + 1) & 0x7FFF,
         "the menu's own state, one past the last sync"
     );
-    assert!(
-        changed[0]
-            .item
-            .as_ref()
-            .is_some_and(|item| !item.added.is_empty()),
-        "the shulker goes out whole, its contents with it"
+    let item = changed[0]
+        .item
+        .as_ref()
+        .expect("the shulker goes out whole, its contents with it");
+    let expected: Vec<(usize, i32)> = (0..27)
+        .map(|slot| (slot, if slot == 0 { 9 } else { slot as i32 }))
+        .collect();
+    assert_eq!(
+        shulker_contents(item).expect("the shulker's contents travel in the packet"),
+        expected,
+        "the contents it holds now, the changed one among them"
     );
     hub.sync_containers(&world);
     assert!(slots_sent(&rx).is_empty(), "and only once");
