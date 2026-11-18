@@ -40,9 +40,13 @@ const MOB_TURN: &[&str] = &[
     "living_incoming_damage",
     "living_damage_pre",
     "living_knockback",
-    // Called from a mob's move: farmland it falls on, a content mod's blocks it touches.
+    // Called from a mob's move: farmland it falls on, a content mod's blocks it touches, the block
+    // it lands on, the one it bounces off, and the ones its sweep crosses.
     "trample",
     "block_step_on",
+    "fall_on",
+    "bounce_on",
+    "entity_inside",
     // Called from that move's own physics: the surface under it, the speeds it travels with, the
     // fluid that pushes it, the ladder it climbs, and the sound its step makes.
     "friction",
@@ -57,17 +61,24 @@ const MOB_TURN: &[&str] = &[
     "sound_type",
     // Called from an enderman's or a shulker's own teleport, in its AI step.
     "ender_entity_teleport",
+    // Asked while a mob ticks: how it types the path it finds, what may see it, and what it may
+    // break.
+    "block_path_type",
+    "adjacent_block_path_type",
+    "living_visibility",
+    "enderman_anger",
+    "can_entity_destroy",
+    "entity_mob_griefing",
 ];
 /// The hooks a mob's turn calls without waiting: a trait mod hears them after the loop, but a
 /// mixin into them still runs in the turn.
 const MOB_TURN_QUEUED: &[&str] = &["living_jump", "living_damage_post"];
 
 /// The path prefixes of the modules a mob's turn never runs, so that a mixin into one of them
-/// leaves the parallel tick on. The rule, not a history: the turn reads the level's blocks, moves
-/// through it and hears its mods, so a module it can reach — and every module not named here, an
-/// unknown crate's included — keeps the tick serial, while the error made of a module wrongly
-/// listed costs simulation order, not parallelism. A prefix matches a module and its descendants,
-/// never a sibling whose name starts the same way.
+/// leaves the parallel tick on. A target is outside the turn when it names a module inside one of
+/// these prefixes and something more within it: the module and its descendants, never a sibling
+/// whose name starts the same way, and never a record too broken to name a module, which stays in
+/// the turn.
 const OUTSIDE_A_MOB_TURN: &[&str] = &[
     // The client's drawing: the frame's own passes, HUD, widgets and shared screen drawing, and the
     // settings and options screens. Drawn while the window renders, after its tick.
@@ -76,13 +87,12 @@ const OUTSIDE_A_MOB_TURN: &[&str] = &[
     "horizon_client_render::options_ui",
     "horizon_client_render::screen_draw",
     "horizon_client_render::ui",
-    // The wire: codecs, framing, encryption and the packets. The turn builds nothing into a
-    // packet: a mob's news leaves it as an event, and the level sends it after the loop.
+    // The wire: codecs, framing, encryption and the packets. A mob's news leaves the turn as an
+    // event, and the level sends it after the loop.
     "horizon_protocol",
-    // The rest of `horizon_client_render` is not here on purpose, though most of it is drawing:
-    // the turn reads that crate's world data (`world`), moves through its `collisions`, draws the
-    // level's random for its `fast_hash` maps and `spans`, and every part hook's forwarder reads
-    // its `api_context`. A mixin into those runs in the turn like any other.
+    // The rest of `horizon_client_render` is left out on purpose: the turn reads its `world`, moves
+    // through its `collisions`, draws the level's random for its `fast_hash` maps and `spans`, and
+    // every part hook's forwarder reads its `api_context`.
 ];
 
 /// Whether the vanilla game function `target` — a mixin target, `crate::module::Type::method` — is
@@ -96,7 +106,8 @@ fn in_a_mob_turn(target: &str) -> bool {
         None => !OUTSIDE_A_MOB_TURN.iter().any(|prefix| {
             target
                 .strip_prefix(prefix)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+                .and_then(|rest| rest.strip_prefix("::"))
+                .is_some_and(|module| !module.is_empty())
         }),
     }
 }
@@ -108,8 +119,8 @@ fn in_a_mob_turn(target: &str) -> bool {
 /// hook the turn waits on; `"quiet"` when trait packages were staged and nothing hooks; None when
 /// no trait package was staged and no mixin hooks.
 pub fn mob_turn(root: &Path) -> Option<&'static str> {
-    // A record without a target conservatively serializes mob turns; only a known hook
-    // outside the turn can leave parallelism enabled.
+    // A record without a usable target conservatively serializes mob turns: only a known hook or a
+    // known module outside the turn leaves parallelism enabled.
     if let Ok(text) = std::fs::read_to_string(root.join(MODS_STAGE)) {
         let record = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
         let injections = record["injections"].as_array();
@@ -231,6 +242,18 @@ mod tests {
                 "horizon_client_lib::motion::native_friction",
                 Some("hooked"),
             ),
+            // A block part is asked inside the mob's own move, on landing and on the sweep.
+            (
+                "landing",
+                "horizon_client::game::native_hooks::block_landing::HitLevel<'_>::native_fall_on",
+                Some("hooked"),
+            ),
+            // The questions its AI asks while it ticks: the path's block types among them.
+            (
+                "path",
+                "horizon_client::game::native_hooks::Game<'_>::native_block_path_type",
+                Some("hooked"),
+            ),
             ("any", "horizon_client::mobs::ai::tick", Some("hooked")),
             // A screen is drawn in the window's frame, after its tick: hooking one leaves the
             // mobs' turns parallel.
@@ -241,6 +264,16 @@ mod tests {
             ),
             // A packet's codec runs when the level sends it, not in a mob's turn.
             ("wire", "horizon_protocol::frame::decompress", None),
+            // A sibling whose name starts with an outside prefix's (`hud_kit`, beside `hud`) is
+            // its own module, so hooking it keeps the tick serial.
+            (
+                "hud neighbour",
+                "horizon_client_render::hud_kit::Something::draw",
+                Some("hooked"),
+            ),
+            // A record too broken to name a module under an outside prefix is no evidence that
+            // anything is outside the turn: it stays in, as every unknown target does.
+            ("broken wire", "horizon_protocol::", Some("hooked")),
             // The rest of the render crate is a module a mob's turn does reach, so a mixin into
             // it keeps the tick serial like any other unknown one.
             (
@@ -248,7 +281,12 @@ mod tests {
                 "horizon_client_render::world::World::block",
                 Some("hooked"),
             ),
-            ("unknown", "some_mod::patches::apply", Some("hooked")),
+            // A module of a crate the list does not name at all.
+            (
+                "unknown crate",
+                "horizon_world::level::tick::BlockTicks::tick",
+                Some("hooked"),
+            ),
         ] {
             let dir = workspace(name, Some(&record(target)));
             assert_eq!(mob_turn(&dir), found, "{name}");
@@ -269,6 +307,13 @@ mod tests {
         let moves = "impl Hooks for Example {\n    fn trample(&self) {}\n}\n";
         std::fs::write(lib.join("lib.rs"), moves).unwrap();
         assert_eq!(mob_turn(&dir), Some("hooked"), "a hook a mob's move calls");
+        let parts = "impl Hooks for Example {\n    fn entity_inside(&self) {}\n}\n";
+        std::fs::write(lib.join("lib.rs"), parts).unwrap();
+        assert_eq!(
+            mob_turn(&dir),
+            Some("hooked"),
+            "a block part a mob's move asks"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
