@@ -240,6 +240,21 @@ fn parse_worker_count(value: Option<String>) -> Option<usize> {
     value?.trim().parse().ok().filter(|&n| n > 0)
 }
 
+/// Whether the run asks for the chunk decoders to be raised again, the
+/// behaviour #18241 took away: `HORIZON_DECODER_PRIORITY=1`. Read once, like
+/// [`worker_count`], since every decoder thread asks and the answer can't
+/// change under a run.
+fn decoder_priority_switch() -> bool {
+    static SWITCH: OnceLock<bool> = OnceLock::new();
+    *SWITCH.get_or_init(|| parse_decoder_priority(std::env::var("HORIZON_DECODER_PRIORITY").ok()))
+}
+
+/// `true` only for `1` (`" 1 "` counts): off where a run doesn't ask for it,
+/// and off for a value someone mistyped, rather than a silent raise.
+fn parse_decoder_priority(value: Option<String>) -> bool {
+    value.is_some_and(|v| v.trim() == "1")
+}
+
 /// Ask the OS to run the calling thread ahead of the process's other
 /// threads, as vanilla's `MinecraftServer.spin` does for its server thread
 /// (`Thread.setPriority(8)` when there are more than four processors), so
@@ -276,6 +291,22 @@ fn favour() -> bool {
 #[cfg(not(any(target_vendor = "apple", windows)))]
 fn favour() -> bool {
     false
+}
+
+/// Called by a chunk decoder thread as it starts (a pool of up to four, the
+/// `ChunkDecoder` of `game/network/remote_chunks.rs`): it leaves the calling
+/// thread where the process's pools already are, at the ordinary priority
+/// every helper has, below the one thread that ticks and draws a frame
+/// (`favour_current` there) — four decoders ahead of it held frames back,
+/// whereas vanilla decodes a chunk on the frame thread itself and its
+/// background workers ask for nothing. `HORIZON_DECODER_PRIORITY=1` gives the
+/// old raise back for an A/B run: the decoder goes ahead of the frame as
+/// [`favour_current`] asks. On Linux this changes nothing either way, for the
+/// reason [`favour_current`] gives: an unprivileged thread there may lower its
+/// own priority but not raise it. Whether the OS took a raise it still asked
+/// for, false when it asked for none.
+pub fn chunk_decoder_current() -> bool {
+    decoder_priority_switch() && favour_current()
 }
 
 /// The CPU time the calling thread has used, where only an OS call gives it
@@ -873,6 +904,72 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// Only `1` asks for the decoders to be raised again: a run asks, a
+    /// mistyped or missing value leaves them below the frame.
+    #[test]
+    fn decoder_priority_switch_parses() {
+        for (value, on) in [
+            (None, false),
+            (Some("1"), true),
+            (Some(" 1 "), true),
+            (Some("0"), false),
+            (Some("true"), false),
+            (Some("2"), false),
+            (Some(""), false),
+        ] {
+            assert_eq!(super::parse_decoder_priority(value.map(String::from)), on);
+        }
+    }
+
+    /// What #18241 is about: the thread a chunk decoder runs on stays at the
+    /// ordinary priority the pools' helpers have, while a thread that asks for
+    /// the raise the frame asks for goes above it — the control half, since
+    /// `favour_current` asks for nothing on a machine of four cores or fewer
+    /// and the first half alone would then pass without proving anything. A
+    /// run that starts with `HORIZON_DECODER_PRIORITY=1` has to raise the
+    /// decoder again instead, which checks the switch the same way.
+    #[cfg(windows)]
+    #[test]
+    fn a_decoder_thread_stays_below_the_frame() {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+            THREAD_PRIORITY_NORMAL,
+        };
+        if std::thread::available_parallelism().map_or(1, |n| n.get()) <= 4 {
+            return;
+        }
+        // A run started with `HORIZON_DECODER_PRIORITY=1` asks for the old
+        // raise: the same measurement then has to show it, which is the A/B.
+        let asked = super::parse_decoder_priority(std::env::var("HORIZON_DECODER_PRIORITY").ok());
+        let priority = |call: fn() -> bool| {
+            std::thread::spawn(move || {
+                call();
+                // SAFETY: reads the priority of the thread it runs on; the
+                // pseudo handle needs no closing.
+                unsafe { GetThreadPriority(GetCurrentThread()) }
+            })
+            .join()
+            .unwrap()
+        };
+        let decoder = priority(super::chunk_decoder_current);
+        let frame = priority(super::favour_current);
+        eprintln!(
+            "#18241 thread priorities (HORIZON_DECODER_PRIORITY={}): chunk decoder {decoder}, \
+             frame's own call {frame} (NORMAL {THREAD_PRIORITY_NORMAL}, \
+             ABOVE_NORMAL {THREAD_PRIORITY_ABOVE_NORMAL})",
+            if asked { 1 } else { 0 }
+        );
+        assert_eq!(
+            decoder,
+            if asked {
+                THREAD_PRIORITY_ABOVE_NORMAL
+            } else {
+                THREAD_PRIORITY_NORMAL
+            }
+        );
+        assert_eq!(frame, THREAD_PRIORITY_ABOVE_NORMAL);
     }
 
     /// A helper goes behind only once a dedicated server asks for it, and
