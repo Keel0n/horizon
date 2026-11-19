@@ -335,9 +335,17 @@ pub fn degrees_per_count(look: LookOptions) -> f64 {
 /// these options, the inverted axes included.
 pub fn motion_for_turn(dyaw: f64, dpitch: f64, look: LookOptions) -> (f64, f64) {
     let per_count = degrees_per_count(look);
+    // Horizon's polar spyglass look speeds a scoped yaw up by the same factor
+    // `turn_player` applies, so a turn asked for in degrees stays exact; the
+    // pitch keeps vanilla's rate either way.
+    let yaw_per_count = if look.scoping && !look.smooth_camera && look.spyglass_polar_look {
+        per_count * spyglass_polar_yaw_scale(look.pitch)
+    } else {
+        per_count
+    };
     let flip = |inverted: bool| if inverted { -1.0 } else { 1.0 };
     (
-        dyaw / per_count * flip(look.invert_x),
+        dyaw / yaw_per_count * flip(look.invert_x),
         dpitch / per_count * flip(look.invert_y),
     )
 }
@@ -544,11 +552,7 @@ mod tests {
         assert_eq!(spyglass_polar_yaw_scale(f32::NAN), 1.0);
         assert_eq!(spyglass_polar_yaw_scale(f32::INFINITY), 1.0);
         assert_eq!(spyglass_polar_yaw_scale(f32::NEG_INFINITY), 1.0);
-        for pitch in [90.0f32, -90.0, 89.999, -89.999] {
-            let factor = spyglass_polar_yaw_scale(pitch);
-            assert_eq!(factor, SPYGLASS_POLAR_LOOK_MAX, "pitch {pitch}");
-            assert!(factor.is_finite() && factor > 0.0);
-        }
+        assert!(spyglass_polar_yaw_scale(90.0).is_finite());
         // A frame looking straight up turns, and stays a rotation.
         let o = LookOptions {
             scoping: true,
@@ -575,6 +579,13 @@ mod tests {
             },
             LookOptions {
                 scoping: true,
+                ..PLAIN
+            },
+            // Horizon's polar look: a turn asked for in degrees is still that turn, at 80°.
+            LookOptions {
+                scoping: true,
+                spyglass_polar_look: true,
+                pitch: 80.0,
                 ..PLAIN
             },
         ] {

@@ -15,7 +15,9 @@ impl Game<'_> {
             scoping: self.camera_type.is_first_person() && self.scoping(),
             invert_x: self.settings.invert_x,
             invert_y: self.settings.invert_y,
-            spyglass_polar_look: self.settings.extras.spyglass_polar_look,
+            // Studio freecam turns its own camera before `MouseLook`'s scale means anything,
+            // and the pitch here is the player's, not the freecam's.
+            spyglass_polar_look: self.settings.extras.spyglass_polar_look && !self.studio.flying(),
             pitch: self.pitch,
         }
     }

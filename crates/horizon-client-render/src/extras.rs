@@ -692,7 +692,7 @@ impl Item {
     pub fn description(self) -> &'static str {
         match self {
             Item::SpyglassPolarLook => {
-                "Looking up or down with a spyglass, the horizontal look gets slower as cos(pitch): this speeds it up by 1/cos(pitch), up to 8× (from 82.8°), so it moves the picture as far as at the horizon. The turn also rolls the picture faster at those angles. Off, the look is vanilla's."
+                "Looking up or down with a spyglass, the horizontal look gets slower as cos(pitch): this speeds it up by 1/cos(pitch), up to 8× (from 82.8°), so the picture moves sideways about as far as at the horizon. The turn also rolls the picture faster at those angles. Off, the look is vanilla's."
             }
             Item::Pregen => {
                 "Enables /pregen in your single-player and LAN worlds. With cheats enabled, use /pregen start to generate an area before exploring it. Does not enable the command on servers you join."
