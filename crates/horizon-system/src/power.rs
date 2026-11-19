@@ -154,12 +154,12 @@ pub fn start() {
 /// crash report's and telemetry's `ac`/`battery`) asks. A loop reads [`sample`] instead: this
 /// starts a process on macOS.
 pub fn read_source() -> Source {
-    read_os(&mut OsProbe::default()).source
+    read_os(&mut OsProbe::new()).source
 }
 
 fn run() {
     let mut channel = Channel::default();
-    let mut probe = OsProbe::default();
+    let mut probe = OsProbe::new();
     let mut clock = Clock::now();
     loop {
         let now = Clock::now();
@@ -277,6 +277,11 @@ struct OsProbe {
 
 #[cfg(target_os = "macos")]
 impl OsProbe {
+    /// On macOS the probe keeps `pmset`'s answer between readings; nowhere else holds anything.
+    fn new() -> Self {
+        Self::default()
+    }
+
     fn reading(&mut self) -> Reading {
         if self.asked.is_some_and(|asked| asked.elapsed() < ASK) {
             return self.reading;
@@ -299,6 +304,14 @@ impl OsProbe {
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
 struct OsProbe;
+
+#[cfg(not(target_os = "macos"))]
+impl OsProbe {
+    /// Nothing is kept between ticks: every reader asks the OS itself.
+    fn new() -> Self {
+        Self
+    }
+}
 
 /// One reading of the OS, what the sampler's thread asks every tick.
 fn read_os(probe: &mut OsProbe) -> Reading {
