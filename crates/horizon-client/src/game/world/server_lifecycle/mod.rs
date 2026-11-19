@@ -160,6 +160,16 @@ impl Game<'_> {
     /// The session lock is not that marker: it is installed before the prepared
     /// level, so tag reads work, and a save in that gap would write the placeholder.
     pub(super) fn finish_server_save(&mut self, crashed: bool) -> Result<()> {
+        // A worker that panicked cannot finish its decoration, finishing or
+        // light-view job, and the save below waits for the jobs in flight
+        // (`Streaming::prepare_save(wait = true)`): abort every level's
+        // generation first, so the crash hook's 30 s write the world instead
+        // of waiting for work that will never finish (`dedicated::EmergencyStop`,
+        // `Interface::stop_now`).
+        if self.stopped_by_a_crash() {
+            self.streaming.abort_generation();
+            self.levels.abort_parked_generation();
+        }
         // IntegratedServer.teardownPublishedState must happen even if an
         // earlier callback panicked; otherwise lan_close only unpublishes a
         // still-serving server instead of disconnecting and dropping its hub.

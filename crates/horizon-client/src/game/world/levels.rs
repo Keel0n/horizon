@@ -607,6 +607,14 @@ impl Levels {
         self.parked.values().map(|level| &level.streaming)
     }
 
+    /// Abort every parked level's generation, as a crash stop does for the
+    /// level in place (`Streaming::abort_generation`).
+    pub(super) fn abort_parked_generation(&mut self) {
+        for level in self.parked.values_mut() {
+            level.streaming.abort_generation();
+        }
+    }
+
     /// The level not in place, in `dim`.
     pub(super) fn parked_mut(&mut self, dim: Dim) -> Option<&mut Parked> {
         self.parked.get_mut(&dim)

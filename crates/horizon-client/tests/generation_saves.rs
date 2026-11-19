@@ -738,3 +738,63 @@ fn a_saved_world_keeps_the_failed_generation_rule() {
     drop(persistent);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A crash stop (`Streaming::abort_generation`) lets the save through: a
+/// worker that panicked never finishes its decoration, and the crash hook's
+/// 30 s must write the world instead of waiting for it.
+#[test]
+fn an_aborted_streaming_does_not_hold_the_save() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Column {
+        x: i32,
+        z: i32,
+    }
+    struct Slow {
+        decorating: Arc<AtomicBool>,
+    }
+    impl ChunkGenerator for Slow {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
+            Box::new(Column { x, z })
+        }
+        fn decorates(&self) -> bool {
+            true
+        }
+        fn decorate(&self, _: &mut (), _region: &mut [Proto; 9]) {
+            // The job a panicked worker never finishes.
+            self.decorating.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(1500));
+        }
+        fn finish(&self, proto: Proto) -> Chunk {
+            let column = proto.downcast::<Column>().unwrap();
+            Chunk::empty(column.x, column.z)
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let context = worker_context(&root);
+    let decorating = Arc::new(AtomicBool::new(false));
+    let generator = Arc::new(Slow { decorating: decorating.clone() });
+    let mut streaming = Streaming::new(generator, context, 2);
+    streaming.center = (0, 0);
+    streaming.radius = 2;
+    streaming.forced.insert((40, -40));
+    let mut world = World::new(BlockStateId(0), 0);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !decorating.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "no decoration ever started");
+        let _ = streaming.update(&mut world);
+        thread::sleep(Duration::from_millis(5));
+    }
+    // The crash stop: no job in flight will ever be finished.
+    streaming.abort_generation();
+    let started = Instant::now();
+    let _step = streaming.prepare_save(&mut world, true, started + Duration::from_secs(10));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the save waited {:?} for a decoration the crash stop ended",
+        started.elapsed()
+    );
+}
