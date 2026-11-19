@@ -1237,15 +1237,22 @@ pub use developer_play::client_as;
 mod installation;
 pub(crate) use installation::install_as;
 
-/// Removes the installed version `tag` unless a program runs from it. A build that predates
-/// runtime leases takes none, so no lease can ever prove its folder unused: the check [`in_use`]
-/// makes here is that proof, and it stands beside the removal it justifies.
+/// Removes the installed version `tag` unless a program runs from it or a native build takes its
+/// resources. A build that predates runtime leases takes none, so no lease can ever prove its
+/// folder unused: the check [`in_use`] makes here is that proof, and it stands beside the removal
+/// it justifies. Both vetoes belong to this path, so every caller inherits them; the dependency
+/// one runs inside the removal's exclusive publication lock, so an install that finishes in
+/// between cannot lose the base it started from.
 pub fn remove(tag: &str) -> Result<(), String> {
     if in_use(tag) {
         return Err(format!("{tag} is running. Quit it first."));
     }
     let dir = version_dir(tag);
-    crate::cache_cleanup::delete_unleased_game_unit(&dir)
+    let veto = || match crate::native_mods::resource_dependent(tag) {
+        Some(build) => Err(crate::native_cache::Error::Dependent(build)),
+        None => Ok(()),
+    };
+    crate::cache_cleanup::delete_unleased_game_unit(&dir, veto)
         .map_err(crate::native_mods::cache_error)?;
     forget_prepared();
     Ok(())
@@ -2921,19 +2928,11 @@ pub fn no_version_installed() -> String {
 }
 
 /// Removes an installed version, unless a program runs from it, and moves the selection to the
-/// newest one left if needed.
+/// newest one left if needed. [`remove`] refuses a version a native build takes its resources
+/// from, under the exclusive publication lock a check here could not hold.
 pub fn remove_version(tag: &str) -> Result<(), String> {
     if !installed().iter().any(|t| t == tag) {
         return Err(format!("{tag} is not installed."));
-    }
-    if let Some(build) = installed()
-        .into_iter()
-        .find(|version| crate::native_mods::about(version).is_some_and(|about| about.base == tag))
-    {
-        return Err(crate::i18n::trf(
-            "This version supplies resources to native build {build}. Remove that build first.",
-            &[("build", &build)],
-        ));
     }
     remove(tag)?;
     crate::storage::eviction::request_cleanup();
@@ -2993,15 +2992,23 @@ fn stale_versions(
 
 /// Whether a running program was started from the version's folder: the game and a server take
 /// their program and `--resources` from it. Windows refuses to delete a running program's files,
-/// so there the delete itself fails. With no answer from `ps` the version counts as running.
+/// so there the delete itself fails. A listing we cannot read — `ps` missing, failing, or
+/// answering something else — counts as running: a removal is the wrong place to guess.
 #[cfg(unix)]
 pub(crate) fn in_use(tag: &str) -> bool {
-    let dir = format!("{}/", version_dir(tag).display());
+    let folder = format!("{}/", version_dir(tag).display());
+    // A client started as `./horizon-client` from its own folder names no absolute path, and its
+    // relative `--resources` names the folder by its last component only (#18393 review).
+    let named = format!("{tag}/");
     Command::new("ps")
         .args(["-A", "-ww", "-o", "args="])
         .output()
         .ok()
-        .is_none_or(|out| String::from_utf8_lossy(&out.stdout).contains(&dir))
+        .filter(|out| out.status.success())
+        .is_none_or(|out| {
+            let listing = String::from_utf8_lossy(&out.stdout);
+            listing.contains(&folder) || listing.contains(&named)
+        })
 }
 
 #[cfg(windows)]
@@ -4635,6 +4642,61 @@ mod tests {
         remove_version("v0.1.0").unwrap();
         assert!(!dir.exists());
         assert!(installed_in(&versions).is_empty());
+    }
+
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): the dependency veto belongs
+    /// to the one removal path, so an automatic cleanup stops at a base an installed native build
+    /// takes its resources from as well — not only a removal a player asks for.
+    #[test]
+    fn a_version_a_native_build_takes_its_resources_from_is_kept() {
+        let Some(root) = std::env::var_os("DEPENDENT_BASE_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_version_a_native_build_takes_its_resources_from_is_kept"
+                ])
+                .env("DEPENDENT_BASE_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let base = versions.join("nightly-2026-11-13-9f42064");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join(COMPLETE), b"").unwrap();
+        fs::write(base.join(CLIENT), b"pre-holder game").unwrap();
+        let build = versions.join("native-phone");
+        fs::create_dir_all(&build).unwrap();
+        fs::write(build.join(COMPLETE), b"").unwrap();
+        fs::write(
+            build.join("native-mods.json"),
+            format!(
+                r#"{{"base":"nightly-2026-11-13-9f42064","horizon":"{}","target":"client","left_out":[]}}"#,
+                "0".repeat(40)
+            ),
+        )
+        .unwrap();
+        let refused = remove_version("nightly-2026-11-13-9f42064").unwrap_err();
+        assert!(refused.contains("native-phone"), "{refused}");
+        assert!(
+            base.join(CLIENT).exists(),
+            "the base stays while it is needed"
+        );
+        remove_version("native-phone").unwrap();
+        remove_version("nightly-2026-11-13-9f42064").unwrap();
+        assert!(!base.exists());
     }
 
     /// A canonical path loses Windows' verbatim prefix on a drive (horizon-mixins' output

@@ -386,27 +386,43 @@ pub(crate) fn delete_game_unit(path: &Path) -> Result<(), Error> {
 
 /// [`delete_game_unit`] for a unit whose links are `links`.
 pub(crate) fn delete_game_unit_with(path: &Path, links: Links) -> Result<(), Error> {
-    delete_unit(path, links, Proof::Lease, || {})
+    delete_unit(path, links, Proof::Lease, no_veto, || {})
 }
 
 pub(crate) fn delete_game_unit_observed(
     path: &Path,
     after_classification: impl FnOnce(),
 ) -> Result<(), Error> {
-    delete_unit(path, Links::Refused, Proof::Lease, after_classification)
+    delete_unit(
+        path,
+        Links::Refused,
+        Proof::Lease,
+        no_veto,
+        after_classification,
+    )
+}
+
+fn no_veto() -> Result<(), Error> {
+    Ok(())
 }
 
 /// An installed unit whose own build predates runtime leases: it holds none and never can, so
 /// the caller's check that no program runs from it is the exclusion ([`Proof::Process`]). A
-/// shared unit stays refused: another installed build reads it without any lease.
-pub(crate) fn delete_unleased_game_unit(path: &Path) -> Result<(), Error> {
-    delete_unit(path, Links::Refused, Proof::Process, || {})
+/// shared unit stays refused: another installed build reads it without any lease. `veto` runs
+/// with the registry's exclusive publication lock held and the unit's identity rechecked, so a
+/// caller that another launcher's publish could race sees the result instead of the race.
+pub(crate) fn delete_unleased_game_unit(
+    path: &Path,
+    veto: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    delete_unit(path, Links::Refused, Proof::Process, veto, || {})
 }
 
 fn delete_unit(
     path: &Path,
     links: Links,
     proof: Proof,
+    veto: impl FnOnce() -> Result<(), Error>,
     after_classification: impl FnOnce(),
 ) -> Result<(), Error> {
     use horizon_platform::mod_package::{locks::Release, runtime_leases::Registry};
@@ -424,6 +440,7 @@ fn delete_unit(
     let registry = Registry::with_release(&real_data, Release::Close)?;
     registry.remove_unit(path, |directory, is_directory| {
         Access::for_unit(path)?.check(proof)?;
+        veto()?;
         after_classification();
         if is_directory && contains_operational_locks(directory, links)? {
             return Err(Error::IncompleteUnit);

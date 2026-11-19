@@ -16,6 +16,8 @@ pub enum Error {
     IncompleteUnit,
     UnsupportedFilesystem,
     Unsafe(PathBuf),
+    /// An installed native build takes its resources from this unit; name it.
+    Dependent(String),
     Io(io::Error),
 }
 
