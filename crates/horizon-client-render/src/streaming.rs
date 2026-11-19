@@ -1156,6 +1156,9 @@ impl Streaming {
         context: Arc<WorkerContext>,
         threads: usize,
     ) -> Self {
+        // The first thread-CPU read measures the time-stamp counter's rate on Windows and
+        // sleeps 20 ms: take it here, not inside the first mesh job.
+        let _ = crate::spans::thread_cpu();
         let shared = Arc::new(Shared {
             queue: Mutex::new(BinaryHeap::new()),
             context: RwLock::new(context.clone()),
