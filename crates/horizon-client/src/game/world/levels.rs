@@ -203,6 +203,10 @@ pub(super) struct Parked {
     spawn_scratch: super::natural_spawning::SpawnScratch,
     /// Server ticks since a player was last in the level.
     idle: u32,
+    /// Its save is queued and its chunks are still in memory until the writer has finished them
+    /// (`close_idle_levels`). The level stays parked, and its `SaveDir` with it: dropping that
+    /// folder joins the writer thread (`Drop for SaveDir`), which a server tick must not do.
+    closing: bool,
     /// The level's own world border (`ServerLevel.getWorldBorder`), and what its players were
     /// last told of it (`LanHost::border_sent`).
     border: horizon_client::worldborder::WorldBorder,
@@ -798,6 +802,7 @@ impl Game<'_> {
             creaking: Default::default(),
             spawn_scratch: Default::default(),
             idle: 0,
+            closing: false,
             border: self.load_border(dim),
             border_sent: None,
         })
@@ -977,7 +982,12 @@ impl Game<'_> {
         }
         if target != self.dim {
             let (mut p, opened) = match self.levels.parked.remove(&target) {
-                Some(p) => (p, false),
+                // A level in use is not on its way out: a close it had started is abandoned,
+                // and only the writes it queued before still land.
+                Some(mut p) => {
+                    p.closing = false;
+                    (p, false)
+                }
                 None => (self.open_level(target)?, true),
             };
             p.world.game_time = self.world.game_time;
@@ -1583,6 +1593,11 @@ impl Game<'_> {
 
     /// Count the parked levels' empty ticks, and save and close the ones
     /// (other than the Overworld) nobody has been in for a while.
+    ///
+    /// A close takes two ticks. The first queues the level's save and does not wait for the
+    /// writer (`save_level(false)`): waiting for the disk here made every idle close a p99
+    /// spike in the tick (`SaveDir::flush`). The level leaves memory on a later tick, once
+    /// `SaveDir::writes_finished` says its chunks are written.
     pub(super) fn close_idle_levels(&mut self) -> Result<()> {
         let mut occupied = self.levels_to_tick();
         // A level a viewed area names, ticked or not, or one a client still holds chunks of.
@@ -1595,29 +1610,98 @@ impl Game<'_> {
             .copied()
             .filter(|d| self.vehicle_waits_in(*d))
             .collect();
-        let mut closing = Vec::new();
+        // A level at its idle limit, and one whose queued save is on disk.
+        let (mut to_save, mut to_finish) = (Vec::new(), Vec::new());
         for (dim, p) in &mut self.levels.parked {
             if occupied.contains(dim) || waiting.contains(dim) {
+                // Back in use, also if it was closing: it stays open, and the writes it queued
+                // for its close still land on their own.
+                p.closing = false;
                 p.idle = 0;
+                continue;
+            }
+            if p.closing {
+                match p.save.writes_finished() {
+                    Ok(true) => to_finish.push(*dim),
+                    Ok(false) => {}
+                    Err(why) => {
+                        // Not saved, as a save that fails: the level stays parked. The error
+                        // stays on its folder, so it is not asked for again on every tick.
+                        p.closing = false;
+                        p.idle = 0;
+                        log::warn!("Horizon: closing {} was not saved: {why}", dim.id());
+                        return Err(why);
+                    }
+                }
                 continue;
             }
             p.idle += 1;
             if *dim != Dim::Overworld && p.idle >= IDLE_TICKS {
-                closing.push(*dim);
+                to_save.push(*dim);
             }
         }
-        if closing.is_empty() {
+        for dim in to_save {
+            self.begin_closing_parked_level(dim)?;
+        }
+        for dim in to_finish {
+            self.finish_closing_parked_level(dim, false)?;
+        }
+        Ok(())
+    }
+
+    /// The first half of a close: queue the level's save without waiting for the writer, and
+    /// mark the level `closing`. It stays parked, with its `SaveDir`, until the second half.
+    fn begin_closing_parked_level(&mut self, dim: Dim) -> Result<()> {
+        let back = self.dim;
+        self.enter_level(dim)?;
+        // Vanilla saves the level's chunks before their unload hooks; they unload on the second
+        // half, from `native_chunks_loaded`'s queue if any of them loaded meanwhile.
+        self.native_chunks_loaded();
+        let saved = self.save_level(false);
+        // Whatever the save did, the level in place is the one before.
+        self.enter_level(back)?;
+        saved?;
+        if let Some(p) = self.levels.parked.get_mut(&dim) {
+            p.closing = true;
+        }
+        Ok(())
+    }
+
+    /// The second half of a close. With `wait`, first wait for the level's writer; without, do
+    /// nothing until the writer has finished by itself. Its chunks and entities leave memory
+    /// once they are on disk, and the level with them.
+    fn finish_closing_parked_level(&mut self, dim: Dim, wait: bool) -> Result<()> {
+        let Some(save) = self.levels.parked.get(&dim).map(|p| p.save.clone()) else {
+            return Ok(());
+        };
+        if wait {
+            save.flush()?;
+        } else if !save.writes_finished()? {
             return Ok(());
         }
-        for dim in closing {
-            self.close_parked_level(dim)?;
+        let back = self.dim;
+        self.enter_level(dim)?;
+        self.native_chunks_loaded();
+        let chunks: Vec<_> = self.world.chunks.values().cloned().collect();
+        self.native_chunks_unloaded(&chunks);
+        // Its entities' attachments are saved with them; they leave memory too.
+        for id in self.persist.uuids.keys() {
+            self.entity_attachments.remove(id);
         }
+        self.enter_level(back)?;
+        self.levels.parked.remove(&dim);
+        self.native_level_closed(dim);
         Ok(())
     }
 
     /// Save the parked level `dim` and drop it: the mods hear its chunks and the level unload. A
     /// level a mod opened at run time stays known, and opens again when entered, as any other.
     pub(super) fn close_parked_level(&mut self, dim: Dim) -> Result<()> {
+        // A level whose save is already queued for its idle close finishes that close instead
+        // of being saved a second time.
+        if self.levels.parked.get(&dim).is_some_and(|p| p.closing) {
+            return self.finish_closing_parked_level(dim, true);
+        }
         let back = self.dim;
         self.enter_level(dim)?;
         // Vanilla saves the level's chunks before their unload hooks.
@@ -1727,6 +1811,14 @@ impl Game<'_> {
         let back = self.dim;
         let dims: Vec<Dim> = self.levels.parked.keys().copied().collect();
         for dim in dims {
+            // A level closing has its save queued already (`close_idle_levels`), and is not
+            // saved twice; a save that waits for the disk waits for that queue too.
+            if self.levels.parked.get(&dim).is_some_and(|p| p.closing) {
+                if wait {
+                    self.finish_closing_parked_level(dim, true)?;
+                }
+                continue;
+            }
             self.enter_level(dim)?;
             self.save_level(wait)?;
         }
@@ -1899,6 +1991,80 @@ mod tests {
             reads(&mut game),
             0,
             "the Overworld's palettes were read again"
+        );
+    }
+
+    /// An idle close takes two passes: the one that reaches the idle limit only queues the
+    /// level's save and does not wait for the writer, and the level leaves memory on a later
+    /// pass, once its chunks are in the region file. Closing in one pass waited for the disk
+    /// inside the tick (the p99 spike of #18233); dropping the level before its save landed
+    /// lost the chunks it held.
+    #[test]
+    #[ignore = "daily"]
+    fn an_idle_close_keeps_the_level_until_its_save_is_on_disk() {
+        use horizon_client::{
+            chunk::Chunk,
+            save::{LevelShape, dimension_dir},
+        };
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("idle-level-close");
+        // A new world each run: nothing is in its region files yet.
+        let _ = std::fs::remove_dir_all(&home);
+        let world = home.join("saves/idle-level-close");
+        let mut resources = None;
+        let mut game = open_game(&mut resources, &root, &home, &world);
+        // A chunk of the Nether that only this level holds, and that nothing has written.
+        game.enter_level(Dim::Nether).unwrap();
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        let mut chunk = Chunk::with_layout(0, 0, game.world.shape.column());
+        chunk.set(1, 70, 2, stone.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.world.modified.insert((0, 0));
+        game.enter_level(Dim::Overworld).unwrap();
+        // Nobody is in it, and its idle count is one pass short of the limit.
+        game.levels.parked_mut(Dim::Nether).unwrap().idle = IDLE_TICKS - 1;
+        game.close_idle_levels().unwrap();
+        let parked = game
+            .levels
+            .parked
+            .get(&Dim::Nether)
+            .expect("the level left memory on the pass that reached its idle limit");
+        assert!(parked.closing, "the level is not on its way out");
+        assert!(
+            parked.world.chunks.contains_key(&(0, 0)),
+            "the level's chunk left memory with the level, before its save"
+        );
+        // Later passes end the close once the writer has finished.
+        for _ in 0..600 {
+            game.close_idle_levels().unwrap();
+            if !game.levels.parked.contains_key(&Dim::Nether) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !game.levels.parked.contains_key(&Dim::Nether),
+            "the closed level never left memory"
+        );
+        let save = SaveDir::new(dimension_dir(&world, Dim::Nether.id()), LevelShape::NETHER);
+        // The world's own biome table (`world_biomes!`), as the walk above saves with.
+        let biomes = match &game.world_biomes {
+            Some(biomes) => biomes,
+            None => game.res.biomes(),
+        };
+        let read_back = save
+            .load(0, 0, game.pack.assets.registry, biomes)
+            .expect("the closed level's chunk is not in the region file");
+        assert_eq!(
+            read_back.block(1, 70, 2),
+            stone,
+            "the chunk on disk is not the one the level held"
         );
     }
 
