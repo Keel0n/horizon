@@ -952,24 +952,23 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
         {
             return true;
         }
-        let started = job_stats::enabled().then(|| {
-            let kind = match &job.job {
-                Job::Generate(..) => 1,
-                Job::Decorate(..) => 2,
-                Job::Finish(..) => 3,
-                Job::Light(..) => 4,
-                Job::Mesh(..) => 5,
-                _ => 6,
-            };
-            // The other jobs (saves, light views, freed meshes) are many and short: counted, not
-            // timed, so the clock reads don't cost more than they do.
-            let cpu = if kind == 6 {
-                std::time::Duration::ZERO
-            } else {
-                crate::spans::thread_cpu().unwrap_or_default()
-            };
-            (kind, cpu)
-        });
+        let enabled = job_stats::enabled();
+        let kind = match &job.job {
+            Job::Generate(..) => 1,
+            Job::Decorate(..) => 2,
+            Job::Finish(..) => 3,
+            Job::Light(..) => 4,
+            Job::Mesh(..) => job_stats::MESH_KIND,
+            _ => 6,
+        };
+        // The mesh job is timed always: the admission check in `complete_commit` prices columns
+        // from what the mesh jobs cost, and a statistic that only runs when someone turned it on
+        // would leave it cold. A mesh job costs a millisecond and more, so the two thread-CPU
+        // reads are a fraction of a percent of it; the other jobs (saves, light views, freed
+        // meshes) are many and short and stay counted, not timed, so their clock reads don't cost
+        // more than they do.
+        let started = (kind != 6 && (enabled || kind == job_stats::MESH_KIND))
+            .then(|| crate::spans::thread_cpu().unwrap_or_default());
         let _tag = horizon_threads::heap_tag(match &job.job {
             Job::Generate(..) => "stream.generate",
             Job::Decorate(..) => "stream.decorate",
@@ -990,20 +989,24 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
             },
             |local| self.run_job(job.job, local),
         );
-        if let Some((kind, started)) = started {
+        if enabled || started.is_some() {
             // A generation job that found the column saved loaded it.
             let kind = if kind == 1 && matches!(done, Some(Done::Generated(_))) {
                 0
             } else {
                 kind
             };
-            let nanos = if kind == 6 {
-                0
-            } else {
+            // The counted-only jobs read no clock at the end either.
+            let nanos = started.map_or(0, |started| {
                 let cpu = crate::spans::thread_cpu().unwrap_or_default();
                 cpu.saturating_sub(started).as_nanos() as u64
-            };
-            job_stats::add(kind, nanos);
+            });
+            if kind == job_stats::MESH_KIND {
+                job_stats::observe_mesh(nanos);
+            }
+            if enabled {
+                job_stats::add(kind, nanos);
+            }
         }
         if let Some(done) = done {
             self.shared.done.send(done);
