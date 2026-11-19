@@ -405,9 +405,11 @@ mod tests {
             )
         );
         // What `config set` writes, `server.toml` reads back as Auto.
-        let auto = format!("[engine]\nparallel_tick = \"auto\"\n");
         assert_eq!(
-            config::Config::parse(&auto).unwrap().engine.parallel_tick,
+            config::Config::parse("[engine]\nparallel_tick = \"auto\"\n")
+                .unwrap()
+                .engine
+                .parallel_tick,
             config::ParallelTick::Auto
         );
         let e = parse_change(&t, "engine.parallel_tick=sometimes").unwrap_err();
