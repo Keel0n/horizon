@@ -107,18 +107,39 @@ impl<T> PerWorker<T> {
     }
 }
 
+/// One counter on a cache line of its own (as [`crate::alloc_count`]'s slots are):
+/// these are written by every worker on every job, and two of them within one
+/// 64-byte line make the cores that own the others re-read it for nothing
+/// (false sharing). Padding is per field, never by position: rustc's field
+/// order is not a contract.
+#[repr(align(64))]
+struct Padded<T>(T);
+
+impl<T> Padded<T> {
+    const fn new(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> std::ops::Deref for Padded<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 struct Entry {
     id: u64,
     source: Arc<dyn Source>,
     /// Workers running one of its jobs.
-    running: AtomicUsize,
+    running: Padded<AtomicUsize>,
     /// Taken out of the pool: the worker that ends its last job tells
     /// [`Registration`]'s drop, which waits for it.
     retired: AtomicBool,
     /// When one of its jobs last ended (or it was registered).
     last_job: Mutex<Instant>,
     /// It was told it is idle ([`release_quiet_sources`]) since that job.
-    quiet: AtomicBool,
+    quiet: Padded<AtomicBool>,
 }
 
 struct Inner {
@@ -130,17 +151,17 @@ struct Inner {
     /// notify is two atomic operations while every worker is busy, and takes
     /// `sleep` (held by no source code) only to wake one: the thread queuing
     /// work (a frame, a tick) never waits behind a worker's choice.
-    epoch: AtomicU64,
-    sleepers: AtomicUsize,
+    epoch: Padded<AtomicU64>,
+    sleepers: Padded<AtomicUsize>,
     sleep: Mutex<()>,
     wake: Condvar,
     /// Signalled when a retired source's job ends.
     finished: Condvar,
     /// Workers running a [`Class::Far`] job.
-    far: AtomicUsize,
+    far: Padded<AtomicUsize>,
     /// Workers that freed their buffers and took no job since.
-    released: AtomicUsize,
-    threads: AtomicUsize,
+    released: Padded<AtomicUsize>,
+    threads: Padded<AtomicUsize>,
     idle_release: Duration,
 }
 
@@ -224,14 +245,14 @@ impl Pool {
         let inner = Arc::new(Inner {
             sources: RwLock::new(Vec::new()),
             next_id: AtomicU64::new(0),
-            epoch: AtomicU64::new(0),
-            sleepers: AtomicUsize::new(0),
+            epoch: Padded::new(AtomicU64::new(0)),
+            sleepers: Padded::new(AtomicUsize::new(0)),
             sleep: Mutex::new(()),
             wake: Condvar::new(),
             finished: Condvar::new(),
-            far: AtomicUsize::new(0),
-            released: AtomicUsize::new(0),
-            threads: AtomicUsize::new(threads.max(1)),
+            far: Padded::new(AtomicUsize::new(0)),
+            released: Padded::new(AtomicUsize::new(0)),
+            threads: Padded::new(AtomicUsize::new(threads.max(1))),
             idle_release,
         });
         let mut started = 0;
@@ -269,10 +290,10 @@ impl Pool {
             .push(Arc::new(Entry {
                 id,
                 source,
-                running: AtomicUsize::new(0),
+                running: Padded::new(AtomicUsize::new(0)),
                 retired: AtomicBool::new(false),
                 last_job: Mutex::new(Instant::now()),
-                quiet: AtomicBool::new(false),
+                quiet: Padded::new(AtomicBool::new(false)),
             }));
         self.inner.notify(true);
         Registration {
@@ -911,5 +932,238 @@ mod tests {
             assert!(Instant::now() < deadline, "the worker died with the panic");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+}
+
+/// What [`Inner`]'s counters cost on one cache line against a line each, the
+/// pool's notify path and a worker's job loop on 8 threads: the two structures
+/// are twins (same atomics, same operations, one generic body) so the only
+/// difference measured is the layout (`cargo test --profile fast -p
+/// horizon-threads --lib -- --ignored --nocapture padded`).
+#[cfg(test)]
+mod padding_bench {
+    use super::Padded;
+    use std::hint::black_box;
+    use std::sync::atomic::{
+        AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed, Ordering::SeqCst,
+    };
+    use std::time::{Duration, Instant};
+
+    const WORKERS: usize = 8;
+    /// The pool's counters, as [`super::Inner`] carries them.
+    trait Counters: Sync {
+        fn epoch(&self) -> &AtomicU64;
+        fn sleepers(&self) -> &AtomicUsize;
+        fn far(&self) -> &AtomicUsize;
+        fn released(&self) -> &AtomicUsize;
+        fn threads(&self) -> &AtomicUsize;
+    }
+
+    /// A line each: what the pool has now.
+    struct Spaced {
+        epoch: Padded<AtomicU64>,
+        sleepers: Padded<AtomicUsize>,
+        far: Padded<AtomicUsize>,
+        released: Padded<AtomicUsize>,
+        threads: Padded<AtomicUsize>,
+    }
+
+    impl Spaced {
+        fn new() -> Self {
+            Self {
+                epoch: Padded::new(AtomicU64::new(0)),
+                sleepers: Padded::new(AtomicUsize::new(0)),
+                far: Padded::new(AtomicUsize::new(0)),
+                released: Padded::new(AtomicUsize::new(0)),
+                threads: Padded::new(AtomicUsize::new(WORKERS)),
+            }
+        }
+    }
+
+    /// All of them in one line: what the pool had before (aligned so that the
+    /// five fit one line, the worst case of the layout being replaced).
+    #[repr(C, align(64))]
+    struct Packed {
+        epoch: AtomicU64,
+        sleepers: AtomicUsize,
+        far: AtomicUsize,
+        released: AtomicUsize,
+        threads: AtomicUsize,
+    }
+
+    impl Packed {
+        fn new() -> Self {
+            Self {
+                epoch: AtomicU64::new(0),
+                sleepers: AtomicUsize::new(0),
+                far: AtomicUsize::new(0),
+                released: AtomicUsize::new(0),
+                threads: AtomicUsize::new(WORKERS),
+            }
+        }
+    }
+
+    macro_rules! counters {
+        ($($ty:ident),*) => {$(
+            impl Counters for $ty {
+                fn epoch(&self) -> &AtomicU64 {
+                    &self.epoch
+                }
+                fn sleepers(&self) -> &AtomicUsize {
+                    &self.sleepers
+                }
+                fn far(&self) -> &AtomicUsize {
+                    &self.far
+                }
+                fn released(&self) -> &AtomicUsize {
+                    &self.released
+                }
+                fn threads(&self) -> &AtomicUsize {
+                    &self.threads
+                }
+            }
+        )*};
+    }
+    counters!(Spaced, Packed);
+
+    /// The frame or tick thread's notifies: one per job it queues.
+    const NOTIFIES: u64 = 1_000_000;
+
+    /// One job of a busy worker: `work`'s epoch, `choose`'s threads and far, a
+    /// far place every eighth job (the compare-exchange that takes it and the
+    /// fetch that ends it), a release of buffers every sixty-fourth. A busy
+    /// worker never goes to sleep, so it never writes `sleepers`: that counter
+    /// is the notifier's to read.
+    fn job<C: Counters>(counters: &C, round: u64) {
+        let _epoch = counters.epoch().load(SeqCst);
+        let threads = counters.threads().load(Relaxed);
+        if round % 8 == 0 {
+            let mut far = counters.far().load(SeqCst);
+            while far < threads.saturating_sub(1).max(1) {
+                match counters
+                    .far()
+                    .compare_exchange_weak(far, far + 1, SeqCst, SeqCst)
+                {
+                    Ok(_) => break,
+                    Err(now) => far = now,
+                }
+            }
+            counters.far().fetch_sub(1, SeqCst);
+        }
+        if round % 64 == 0 {
+            counters.released().fetch_add(1, Relaxed);
+            counters.released().fetch_sub(1, Relaxed);
+        }
+    }
+
+    /// One notify, as `Inner::notify` does it: bump the epoch, then look at the
+    /// sleepers.
+    fn notify<C: Counters>(counters: &C) {
+        counters.epoch().fetch_add(1, SeqCst);
+        black_box(counters.sleepers().load(SeqCst));
+    }
+
+    /// Seven busy workers and the one thread that queues their work: how long
+    /// its notifies take (`notify` runs on this thread, timed), and what the
+    /// workers got through in the same while.
+    fn measure<C: Counters>(counters: &C) -> (Duration, u64) {
+        let stop = AtomicBool::new(false);
+        let stop = &stop;
+        let done: Vec<AtomicU64> = (0..WORKERS - 1).map(|_| AtomicU64::new(0)).collect();
+        let notified = std::thread::scope(|scope| {
+            for slot in done.iter() {
+                scope.spawn(move || {
+                    let mut round = 0;
+                    while !stop.load(Relaxed) {
+                        job(counters, round);
+                        round += 1;
+                    }
+                    slot.store(round, Relaxed);
+                });
+            }
+            let start = Instant::now();
+            for _ in 0..NOTIFIES {
+                notify(counters);
+            }
+            let elapsed = start.elapsed();
+            stop.store(true, Relaxed);
+            elapsed
+        });
+        (notified, done.iter().map(|d| d.load(Relaxed)).sum())
+    }
+
+    /// The middle run's time and the median distance from it, in seconds.
+    fn median_mad(mut times: Vec<f64>) -> (f64, f64) {
+        times.sort_by(f64::total_cmp);
+        let median = times[times.len() / 2];
+        let mut deviations: Vec<f64> = times.iter().map(|t| (t - median).abs()).collect();
+        deviations.sort_by(f64::total_cmp);
+        (median, deviations[deviations.len() / 2])
+    }
+
+    /// Padded counters against packed ones, same access pattern on 8 threads:
+    /// the padding has to make the notify path more than 5 % faster (the
+    /// issue's gate) — the path the frame or tick thread takes to hand work to
+    /// the pool, which is what a server's tick waits on. Each variant's median
+    /// and MAD (the spread the machine adds) are printed, so a run on a noisy
+    /// machine shows itself. Measurements only: run it by hand on an idle one.
+    #[test]
+    #[ignore = "performance measurement; run with --profile fast on an idle machine"]
+    fn padded_counters_beat_packed_ones() {
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "build with --profile fast"
+        );
+        let runs = 15;
+        let mut spaced = Vec::with_capacity(runs);
+        let mut packed = Vec::with_capacity(runs);
+        let mut spaced_jobs = Vec::with_capacity(runs);
+        let mut packed_jobs = Vec::with_capacity(runs);
+        // One warm-up round of each, so neither pays for a cold heap or a cold
+        // instruction cache.
+        let (spaced_counters, packed_counters) = (Spaced::new(), Packed::new());
+        measure(&spaced_counters);
+        measure(&packed_counters);
+        for run in 0..runs {
+            // Interleaved and alternating which goes first, so a machine that
+            // slows down or speeds up between runs hits both the same.
+            for at in 0..2 {
+                let spaced_now = (at == 0) == (run % 2 == 0);
+                let (time, jobs) = if spaced_now {
+                    measure(&spaced_counters)
+                } else {
+                    measure(&packed_counters)
+                };
+                if spaced_now {
+                    spaced.push(time.as_secs_f64());
+                    spaced_jobs.push(jobs as f64);
+                } else {
+                    packed.push(time.as_secs_f64());
+                    packed_jobs.push(jobs as f64);
+                }
+            }
+        }
+        let (spaced_median, spaced_mad) = median_mad(spaced);
+        let (packed_median, packed_mad) = median_mad(packed);
+        let (spaced_ns, packed_ns) = (
+            spaced_median / NOTIFIES as f64 * 1e9,
+            packed_median / NOTIFIES as f64 * 1e9,
+        );
+        let gain = (packed_median / spaced_median - 1.0) * 100.0;
+        println!(
+            "notify on 7 busy workers, per notify: packed {packed_ns:.1} ns, MAD {:.1} %; padded {spaced_ns:.1} ns, MAD {:.1} %; padded is {gain:.1} % faster (gate 5 %: {})",
+            packed_mad / packed_median * 100.0,
+            spaced_mad / spaced_median * 100.0,
+            if gain > 5.0 { "pass" } else { "fail" }
+        );
+        println!(
+            "the 7 workers meanwhile: packed {:.2} M jobs, padded {:.2} M jobs",
+            median_mad(packed_jobs).0 / 1e6,
+            median_mad(spaced_jobs).0 / 1e6
+        );
+        assert!(
+            spaced_median < packed_median,
+            "padded state is not faster than packed"
+        );
     }
 }
