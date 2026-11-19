@@ -10,9 +10,7 @@
 //! spread rather than as a verdict; the assertion is only on the direction, never on the margin.
 use std::hint::black_box;
 use std::ops::Deref;
-use std::sync::atomic::{
-    AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed, Ordering::SeqCst,
-};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 
 /// One counter on a cache line of its own: what `jobs::Inner` now does per counter.
