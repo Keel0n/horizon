@@ -65,14 +65,21 @@ pub(super) fn observe_mesh(nanos: u64) {
     MESH_EWMA.store(ewma(prev, nanos, samples), Ordering::Relaxed);
     MESH_SAMPLES.fetch_add(1, Ordering::Relaxed);
 }
+/// The estimate as the admission check reads it: `None` until a few mesh jobs
+/// have priced it, and `None` at zero, which prices nothing.
+fn ready(samples: u64, cost: u64) -> Option<u64> {
+    (samples >= MESH_WARMUP && cost > 0).then_some(cost)
+}
 /// What one mesh job costs, once the estimate has warmed up; `None` until then.
 /// `None` too where the platform has no thread CPU clock (`spans::thread_cpu`):
 /// every job then measures zero, the estimate stays cold and the admission check
 /// prices nothing — the behaviour before #18239, kept as that platform's
 /// fallback.
 pub(super) fn mesh_cost_ns() -> Option<u64> {
-    let cost = MESH_EWMA.load(Ordering::Relaxed);
-    (MESH_SAMPLES.load(Ordering::Relaxed) >= MESH_WARMUP && cost > 0).then_some(cost)
+    ready(
+        MESH_SAMPLES.load(Ordering::Relaxed),
+        MESH_EWMA.load(Ordering::Relaxed),
+    )
 }
 
 #[cfg(test)]
@@ -81,7 +88,8 @@ mod tests {
 
     /// The estimate follows the cost both ways: the first sample seeds it rather
     /// than creeping up from zero an eighth at a time, and twenty samples follow
-    /// a step in cost to within a few percent.
+    /// a step in cost to within a few percent. It is priced only once a few
+    /// samples have arrived, and never at zero.
     #[test]
     fn the_mesh_estimate_follows_the_cost_it_is_fed() {
         assert_eq!(ewma(0, 30_000_000, 0), 30_000_000);
@@ -95,18 +103,22 @@ mod tests {
         // A cheaper job pulls the estimate down as fast as a dearer lifts it.
         assert!(ewma(cost, 10_000_000, 1) < cost);
         assert!(ewma(cost, 60_000_000, 1) > cost);
-    }
-
-    /// No estimate until a few mesh jobs have priced it: a statistic that has
-    /// seen nothing bounds nothing (`fits` then prices nothing), and once warmed
-    /// up it does. No other test feeds these process-wide statics, so this one
-    /// reads them cold and then warms them.
-    #[test]
-    fn a_cold_mesh_estimate_prices_nothing() {
-        assert_eq!(mesh_cost_ns(), None);
-        for _ in 0..MESH_WARMUP {
-            observe_mesh(30_000_000);
-        }
-        assert_eq!(mesh_cost_ns(), Some(30_000_000));
+        // Nothing is priced until a few samples have priced it: a statistic that
+        // has seen nothing bounds nothing, and the admission check then prices
+        // nothing (`fits`). Zero stays unpriced however many samples arrived —
+        // the platform with no thread CPU clock measures nothing — and one sample
+        // short of the warm-up is still cold.
+        assert_eq!(
+            ready(0, 0),
+            None,
+            "a statistic that has seen nothing bounds nothing"
+        );
+        assert_eq!(
+            ready(MESH_WARMUP, 0),
+            None,
+            "a zero-cost estimate prices nothing"
+        );
+        assert_eq!(ready(MESH_WARMUP - 1, 30_000_000), None, "still cold");
+        assert_eq!(ready(MESH_WARMUP, 30_000_000), Some(30_000_000));
     }
 }
