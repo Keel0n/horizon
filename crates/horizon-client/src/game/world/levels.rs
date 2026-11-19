@@ -220,6 +220,14 @@ impl Parked {
         knots,
         general.rows
     );
+
+    /// A write reached this level: it is not on its way out, and the idle count starts again
+    /// (`close_idle_levels`). What the write left must not be dropped with a close already
+    /// queued, and a level a mod keeps writing to is not closed every tick.
+    fn not_closing(&mut self) {
+        self.closing = false;
+        self.idle = 0;
+    }
 }
 
 impl Game<'_> {
@@ -523,12 +531,16 @@ impl Levels {
     }
 
     /// The world of the level not in place whose dimension is `dimension`, to
-    /// change.
+    /// change. A change reaching a level whose close is queued cancels that close: otherwise it
+    /// would be dropped with the level (`close_idle_levels`).
     pub(super) fn parked_world_mut_of(&mut self, dimension: &str) -> Option<&mut World> {
         self.parked
             .iter_mut()
             .find(|(dim, _)| dim.id() == dimension)
-            .map(|(_, level)| &mut level.world)
+            .map(|(_, level)| {
+                level.not_closing();
+                &mut level.world
+            })
     }
 
     /// The streaming of the level not in place whose dimension is `dimension`.
@@ -544,12 +556,16 @@ impl Levels {
         self.parked_of(dimension)?.locator.clone()
     }
 
-    /// The streaming of the level not in place whose dimension is `dimension`, to change.
+    /// The streaming of the level not in place whose dimension is `dimension`, to change: a
+    /// ticket it holds cancels a queued close, as a world change does (`close_idle_levels`).
     pub(super) fn parked_streaming_of_mut(&mut self, dimension: &str) -> Option<&mut Streaming> {
         self.parked
             .iter_mut()
             .find(|(dim, _)| dim.id() == dimension)
-            .map(|(_, level)| &mut level.streaming)
+            .map(|(_, level)| {
+                level.not_closing();
+                &mut level.streaming
+            })
     }
 
     /// `ServerLevel.setChunkForced`: force a column in an already open level without changing the acting
@@ -613,9 +629,13 @@ impl Levels {
         self.parked.values().map(|level| &level.streaming)
     }
 
-    /// The level not in place, in `dim`.
+    /// The level not in place, in `dim`; a change through it cancels a queued close
+    /// (`close_idle_levels`).
     pub(super) fn parked_mut(&mut self, dim: Dim) -> Option<&mut Parked> {
-        self.parked.get_mut(&dim)
+        self.parked.get_mut(&dim).map(|level| {
+            level.not_closing();
+            level
+        })
     }
 
     /// A parked level by its exact dimension identity, without swapping it in.
@@ -629,7 +649,10 @@ impl Levels {
         self.parked
             .iter_mut()
             .find(|(dim, _)| dim.id() == dimension)
-            .map(|(_, level)| level)
+            .map(|(_, level)| {
+                level.not_closing();
+                level
+            })
     }
 
     /// Whether a parked level's general rows hold any of these UUIDs (arismoko/horizon#792's
@@ -1613,8 +1636,7 @@ impl Game<'_> {
         let (mut to_save, mut to_finish) = (Vec::new(), Vec::new());
         for (dim, p) in &mut self.levels.parked {
             if occupied.contains(dim) || waiting.contains(dim) {
-                p.closing = false;
-                p.idle = 0;
+                p.not_closing();
                 continue;
             }
             if p.closing {
@@ -1630,7 +1652,7 @@ impl Game<'_> {
             self.begin_closing_parked_level(dim)?;
         }
         for dim in to_finish {
-            self.finish_closing_parked_level(dim, false)?;
+            self.finish_closing_parked_level(dim)?;
         }
         Ok(())
     }
@@ -1640,6 +1662,9 @@ impl Game<'_> {
     fn begin_closing_parked_level(&mut self, dim: Dim) -> Result<()> {
         let back = self.dim;
         self.enter_level(dim)?;
+        // Vanilla saves the level's chunks before their unload hooks, and before the entities
+        // `save_entities` brings back hear their load.
+        self.native_chunks_loaded();
         let saved = self.save_level_queued();
         // Whatever the save did, the level in place is the one before.
         self.enter_level(back)?;
@@ -1650,12 +1675,12 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// The second half of a close. With `wait`, the level's writer is waited for; without, the
-    /// pass that finds it done ends the close. Its chunks and entities leave memory with it.
-    fn finish_closing_parked_level(&mut self, dim: Dim, wait: bool) -> Result<()> {
+    /// The second half of a close: the pass that finds the level's queued save done ends the
+    /// close and its chunks and entities leave memory. A level that came back into use keeps
+    /// open, and the writes it queued land on their own.
+    fn finish_closing_parked_level(&mut self, dim: Dim) -> Result<()> {
         let written = match self.levels.parked.get(&dim) {
             None => return Ok(()),
-            Some(p) if wait => p.save.flush().map(|()| true),
             Some(p) => p.save.writes_finished(),
         };
         match written {
@@ -1665,15 +1690,30 @@ impl Game<'_> {
                 // Not saved, as a save that fails: the level stays parked. The error stays on
                 // its folder, so it is not asked for again on every tick.
                 if let Some(p) = self.levels.parked.get_mut(&dim) {
-                    p.closing = false;
-                    p.idle = 0;
+                    p.not_closing();
                 }
                 log::warn!("Horizon: closing {} was not saved: {why}", dim.id());
                 return Err(why);
             }
         }
+        // Back in use while its save was queued: a ticket or a viewed area came with it, or a
+        // vehicle waits there. It stays open, and the writes it queued land on their own.
+        if self.level_in_use(dim) {
+            if let Some(p) = self.levels.parked.get_mut(&dim) {
+                p.not_closing();
+            }
+            return Ok(());
+        }
         let back = self.dim;
         self.drop_parked_level(dim, back)
+    }
+
+    /// Whether `dim`'s level is in use now: ticked, named by a viewed area, or holding a vehicle
+    /// that waits for its rider (`close_idle_levels`). A level in use is not closed.
+    fn level_in_use(&self, dim: Dim) -> bool {
+        self.levels_to_tick().contains(&dim)
+            || self.needs_view_pass(dim)
+            || self.vehicle_waits_in(dim)
     }
 
     /// Take `dim` out of memory and put `back` in place: the tail of a close, once the level's
@@ -1697,13 +1737,13 @@ impl Game<'_> {
     /// Save the parked level `dim` and drop it: the mods hear its chunks and the level unload. A
     /// level a mod opened at run time stays known, and opens again when entered, as any other.
     pub(super) fn close_parked_level(&mut self, dim: Dim) -> Result<()> {
-        // A level whose save is already queued for its idle close finishes that close instead
-        // of being saved a second time.
-        if self.levels.parked.get(&dim).is_some_and(|p| p.closing) {
-            return self.finish_closing_parked_level(dim, true);
-        }
+        // A level whose close is waiting for its queued save is saved again here: whatever
+        // reached it since that save (a mod's raid, a forced chunk) must not go with the level.
+        // Entering it clears `closing`, so the close this finishes is the save made below.
         let back = self.dim;
         self.enter_level(dim)?;
+        // Vanilla saves the level's chunks before their unload hooks.
+        self.native_chunks_loaded();
         if let Err(why) = self.save_level(true) {
             // Not saved: the level stays parked, and the level in place is the one before.
             self.enter_level(back)?;
@@ -1800,14 +1840,10 @@ impl Game<'_> {
         let back = self.dim;
         let dims: Vec<Dim> = self.levels.parked.keys().copied().collect();
         for dim in dims {
-            // A level closing has its save queued already (`close_idle_levels`), and is not
-            // saved twice; a save that waits for the disk waits for that queue too.
-            if self.levels.parked.get(&dim).is_some_and(|p| p.closing) {
-                if wait {
-                    self.finish_closing_parked_level(dim, true)?;
-                }
-                continue;
-            }
+            // A level whose close is queued is saved here like any other, and the close goes
+            // with `enter_level`: this path cannot tell whether the level came back into use
+            // (a ticket from another level's save hook, a viewed area), so the drop stays with
+            // `close_idle_levels`, which checks. It re-saves and re-closes at its next pass.
             self.enter_level(dim)?;
             self.save_level(wait)?;
         }
@@ -2036,7 +2072,8 @@ mod tests {
         );
         // With its save on disk, the next pass ends the close.
         game.levels
-            .parked_mut(Dim::Nether)
+            .parked
+            .get(&Dim::Nether)
             .unwrap()
             .save
             .flush()
@@ -2054,6 +2091,139 @@ mod tests {
             read_back.block(1, 70, 2),
             stone,
             "the chunk on disk is not the one the level held"
+        );
+    }
+
+    /// A level whose close is queued is saved and closed in two passes, and something can still
+    /// reach it in between: a mod's raid, a forced chunk, another level's save hook. Such a
+    /// write cancels the close, so the level is not dropped with the save of the first pass, and
+    /// the write is saved when the level is saved again.
+    #[test]
+    #[ignore = "daily"]
+    fn a_write_while_an_idle_close_waits_keeps_the_level_for_its_save() {
+        use horizon_client::{
+            chunk::Chunk,
+            save::{LevelShape, dimension_dir},
+        };
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("idle-close-write");
+        let _ = std::fs::remove_dir_all(&home);
+        let world = home.join("saves/idle-close-write");
+        let mut resources = None;
+        let mut game = open_game(&mut resources, &root, &home, &world);
+        game.enter_level(Dim::Nether).unwrap();
+        let _ = game
+            .save
+            .tables
+            .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&game.pack.assets)));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        let gold = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:gold_block")
+            .unwrap();
+        let mut chunk = Chunk::with_layout(0, 0, game.world.shape.column());
+        chunk.set(1, 70, 2, stone.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.world.modified.insert((0, 0));
+        game.enter_level(Dim::Overworld).unwrap();
+        game.levels.parked_mut(Dim::Nether).unwrap().idle = IDLE_TICKS - 1;
+        game.close_idle_levels().unwrap();
+        assert!(
+            game.levels.parked.get(&Dim::Nether).unwrap().closing,
+            "the level is not on its way out"
+        );
+        // What a mod's handle does: a change through the level's world, without entering it.
+        let changed = game
+            .levels
+            .parked_world_mut_of(Dim::Nether.id())
+            .expect("the parked level");
+        let layout = changed.shape.column();
+        let mut chunk = Chunk::with_layout(0, 0, layout);
+        chunk.set(1, 70, 2, gold.0);
+        changed.chunks.insert((0, 0), Arc::new(chunk));
+        changed.modified.insert((0, 0));
+        assert!(
+            !game.levels.parked.get(&Dim::Nether).unwrap().closing,
+            "a write did not cancel the queued close"
+        );
+        // The pass that finds the first save done must not drop the level it was changed in.
+        game.levels
+            .parked
+            .get(&Dim::Nether)
+            .unwrap()
+            .save
+            .flush()
+            .unwrap();
+        game.close_idle_levels().unwrap();
+        assert!(
+            game.levels.parked.contains_key(&Dim::Nether),
+            "the level was dropped with a write of its own unsaved"
+        );
+        // Saved again, and closed with it: the write is in the region file.
+        game.close_parked_level(Dim::Nether).unwrap();
+        let save = SaveDir::new(dimension_dir(&world, Dim::Nether.id()), LevelShape::NETHER);
+        let read_back = save
+            .load(0, 0, game.pack.assets.registry, world_biomes!(game))
+            .expect("the closed level's chunk is not in the region file");
+        assert_eq!(
+            read_back.block(1, 70, 2),
+            gold,
+            "the write that cancelled the close was not saved"
+        );
+    }
+
+    /// The same, for a ticket rather than a chunk: a level a ticket came to is in use, and the
+    /// pass that would drop it after its queued save must leave it open.
+    #[test]
+    #[ignore = "daily"]
+    fn a_ticket_while_an_idle_close_waits_keeps_the_level() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("idle-close-ticket");
+        let _ = std::fs::remove_dir_all(&home);
+        let world = home.join("saves/idle-close-ticket");
+        let mut resources = None;
+        let mut game = open_game(&mut resources, &root, &home, &world);
+        game.enter_level(Dim::Nether).unwrap();
+        game.enter_level(Dim::Overworld).unwrap();
+        game.levels.parked_mut(Dim::Nether).unwrap().idle = IDLE_TICKS - 1;
+        game.close_idle_levels().unwrap();
+        assert!(
+            game.levels.parked.get(&Dim::Nether).unwrap().closing,
+            "the level is not on its way out"
+        );
+        // A forced chunk, as another level's save hook leaves one (the ticket alone: the load is
+        // left to the streaming that owns it).
+        assert!(
+            game.levels
+                .parked_streaming_of_mut(Dim::Nether.id())
+                .expect("the parked level's streaming")
+                .set_forced(0, 0, true),
+            "the level's chunk is not forced"
+        );
+        game.levels
+            .parked
+            .get(&Dim::Nether)
+            .unwrap()
+            .save
+            .flush()
+            .unwrap();
+        game.close_idle_levels().unwrap();
+        assert!(
+            game.levels.parked.contains_key(&Dim::Nether),
+            "the level holding a ticket was dropped"
+        );
+        assert!(
+            !game.levels.parked.get(&Dim::Nether).unwrap().closing,
+            "the close is still queued for a level in use"
         );
     }
 
