@@ -2003,6 +2003,13 @@ mod tests {
         let mut game = open_game(&mut resources, &root, &home, &world);
         // A chunk of the Nether that only this level holds, and that nothing has written.
         game.enter_level(Dim::Nether).unwrap();
+        // The tables a save writes the heightmaps and block ticks with: nothing has decoded a
+        // chunk of this level yet, so the save would write the chunk without them and the read
+        // below would not find the block it holds.
+        let _ = game
+            .save
+            .tables
+            .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&game.pack.assets)));
         let stone = game
             .pack
             .assets
