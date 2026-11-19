@@ -639,10 +639,9 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 child => {
-                    let (mut child, claims) = child.unwrap();
-                    let status = child.wait();
-                    drop(claims);
-                    break status;
+                    // The claims stay held until the game this test started is gone.
+                    let (mut child, _claims) = child.unwrap();
+                    break child.wait();
                 }
             }
         };
