@@ -74,3 +74,37 @@ pub fn mesh_cost_ns() -> Option<u64> {
         MESH_EWMA.load(Ordering::Relaxed),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The estimate follows the cost both ways and has caught up with a step
+    /// after about twenty samples; the first sample seeds it rather than
+    /// creeping up from zero an eighth at a time.
+    #[test]
+    fn the_mesh_estimate_follows_the_cost_it_is_fed() {
+        assert_eq!(ewma_next(0, 30_000_000, 0), 30_000_000);
+        assert!(ewma_step(0, 30_000_000) < 30_000_000);
+        // Seeded at 5 ms by a first, cheap job, then twenty 30 ms ones.
+        let mut cost = ewma_next(0, 5_000_000, 0);
+        for _ in 0..20 {
+            cost = ewma_step(cost, 30_000_000);
+        }
+        assert!((25_000_000..=30_000_000).contains(&cost), "{cost}");
+        // A cheaper job pulls the estimate down as fast as a dearer lifts it.
+        assert!(ewma_step(cost, 10_000_000) < cost);
+        assert!(ewma_step(cost, 60_000_000) > cost);
+    }
+
+    /// A cold estimate is no estimate at all: the admission check reading it as
+    /// a cost of zero would refuse nothing, but reading zero as a warmed-up cost
+    /// would refuse every column past the first.
+    #[test]
+    fn a_cold_estimate_is_no_estimate_at_all() {
+        assert_eq!(cost_ready(0, 0), None);
+        assert_eq!(cost_ready(MESH_WARMUP - 1, 30_000_000), None);
+        assert_eq!(cost_ready(MESH_WARMUP, 0), None);
+        assert_eq!(cost_ready(MESH_WARMUP, 30_000_000), Some(30_000_000));
+    }
+}
