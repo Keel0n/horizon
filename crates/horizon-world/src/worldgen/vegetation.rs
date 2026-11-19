@@ -925,11 +925,9 @@ mod tests {
         assert!(multiface_class(None, "example:glow_template").is_err());
     }
 
-    /// Vanilla resolves a multiface block's name in the whole block registry
-    /// (`BuiltInRegistries.BLOCK`) and checks its class after that, so a mod's
-    /// own block decodes here too.
-    #[test]
-    fn multiface_growth_decodes_a_mod_block() {
+    /// Bindings over a registry that also registers a mod's multiface block.
+    #[cfg(test)]
+    fn modded_multiface_bindings() -> FeatureBlockBindings<'static> {
         let names = [
             "minecraft:air",
             "minecraft:cave_air",
@@ -969,6 +967,8 @@ mod tests {
             ("defaults", Tag::Compound(defaults)),
         ]))
         .unwrap();
+        // The bindings borrow the registry for as long as a test holds them.
+        let registry: &'static BlockRegistry = Box::leak(Box::new(registry));
         let empty = Tag::compound([
             ("x", Tag::LongArray(vec![0])),
             ("y", Tag::LongArray(vec![0])),
@@ -985,7 +985,7 @@ mod tests {
             ("shapes", Tag::List(vec![empty])),
             ("cached_shapes", Tag::IntArray(vec![0; states.len()])),
         ]);
-        let collisions = CachedCollisionRegistry::from_nbt(&collision_tag, &registry).unwrap();
+        let collisions = CachedCollisionRegistry::from_nbt(&collision_tag, registry).unwrap();
         let blocks = names
             .iter()
             .copied()
@@ -1003,12 +1003,12 @@ mod tests {
         )
         .unwrap();
         let providers =
-            StateProviderBindings::new(&registry, BTreeSet::new(), &BTreeMap::new()).unwrap();
+            StateProviderBindings::new(registry, BTreeSet::new(), &BTreeMap::new()).unwrap();
         let catalog = StateProviderCatalog::from_resources(&BTreeMap::new()).unwrap();
         let placement =
-            BlockPlacementBindings::new(&registry, &properties, &BTreeSet::new(), &BTreeSet::new())
+            BlockPlacementBindings::new(registry, &properties, &BTreeSet::new(), &BTreeSet::new())
                 .unwrap();
-        let bindings = FeatureBlockBindings::new(&registry, BTreeSet::new())
+        FeatureBlockBindings::new(registry, BTreeSet::new())
             .unwrap()
             .with_block_properties(&properties)
             .unwrap()
@@ -1017,15 +1017,27 @@ mod tests {
             .with_multiface_classes(MultifaceClasses::from_names(
                 &["minecraft:glow_lichen", "example:glow_template"],
                 &[],
-            ));
+            ))
+    }
+
+    /// The decoder takes a registered mod multiface block end to end.
+    #[test]
+    fn multiface_growth_decodes_a_mod_block() {
+        let bindings = modded_multiface_bindings();
         let json = r#"{"type":"minecraft:multiface_growth","block":"example:glow_template","can_place_on_floor":true,"can_be_placed_on":"minecraft:stone"}"#;
         let feature = MultifaceGrowthFeature::decode(json, &bindings).unwrap();
-        assert_eq!(Some(feature.block), registry.default_state("example:glow_template"));
-        // `minecraft:glow_lichen` carries the class but is not registered here,
-        // so only the name lookup can fail: it runs before the class does.
-        let unregistered = r#"{"type":"minecraft:multiface_growth","block":"minecraft:glow_lichen","can_place_on_floor":true,"can_be_placed_on":"minecraft:stone"}"#;
+        // `example:glow_template` is the fifth fixture name, so state 4.
+        assert_eq!(feature.block, BlockStateId(4));
+    }
+
+    /// A name the block registry lacks fails before the class is read.
+    #[test]
+    fn multiface_growth_resolves_the_name_before_the_class() {
+        let bindings = modded_multiface_bindings();
+        // `minecraft:glow_lichen` carries the class, so only its name can fail.
+        let json = r#"{"type":"minecraft:multiface_growth","block":"minecraft:glow_lichen","can_place_on_floor":true,"can_be_placed_on":"minecraft:stone"}"#;
         assert!(matches!(
-            MultifaceGrowthFeature::decode(unregistered, &bindings),
+            MultifaceGrowthFeature::decode(json, &bindings),
             Err(DecodeError::Field("multiface block"))
         ));
     }
