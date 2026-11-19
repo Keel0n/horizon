@@ -946,7 +946,10 @@ mod tests {
                 let mut n = code;
                 let mut props = BTreeMap::from([("bottom".into(), Tag::String(bottom.into()))]);
                 for side in ["north", "east", "south", "west"] {
-                    props.insert(side.into(), Tag::String(["none", "low", "tall"][n % 3].into()));
+                    props.insert(
+                        side.into(),
+                        Tag::String(["none", "low", "tall"][n % 3].into()),
+                    );
                     n /= 3;
                 }
                 states.push(Tag::compound([
@@ -960,7 +963,10 @@ mod tests {
             .enumerate()
             .map(|(index, name)| ((*name).into(), Tag::Int(index as i32)))
             .collect();
-        defaults.insert("minecraft:pale_moss_carpet".into(), Tag::Int(names.len() as i32));
+        defaults.insert(
+            "minecraft:pale_moss_carpet".into(),
+            Tag::Int(names.len() as i32),
+        );
         let registry = BlockRegistry::from_nbt(&Tag::compound([
             ("DataVersion", Tag::Int(crate::DATA_VERSION)),
             ("states", Tag::List(states.clone())),
