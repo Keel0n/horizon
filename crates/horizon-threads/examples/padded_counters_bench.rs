@@ -149,9 +149,15 @@ fn measure<C: Counters>(counters: &C) -> (Duration, u64) {
     let stop = AtomicBool::new(false);
     let stop = &stop;
     let done: Vec<AtomicU64> = (0..WORKERS - 1).map(|_| AtomicU64::new(0)).collect();
+    // `spawn` returns before the thread runs, so the timed loop waits here until every worker
+    // is on the counters: otherwise the first notifies share the line with fewer than seven
+    // busy workers, and the startup time of seven threads lands in the measurement.
+    let ready = std::sync::Barrier::new(WORKERS);
+    let ready = &ready;
     let notified = std::thread::scope(|scope| {
         for slot in done.iter() {
             scope.spawn(move || {
+                ready.wait();
                 let mut round = 0;
                 while !stop.load(Relaxed) {
                     job(counters, round);
@@ -160,6 +166,7 @@ fn measure<C: Counters>(counters: &C) -> (Duration, u64) {
                 slot.store(round, Relaxed);
             });
         }
+        ready.wait();
         let start = Instant::now();
         for _ in 0..NOTIFIES {
             notify(counters);
