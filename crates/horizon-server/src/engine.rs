@@ -1,4 +1,4 @@
-﻿//! The engine: the game itself, run headless (`horizon-client --dedicated`, crates/horizon-client
+//! The engine: the game itself, run headless (`horizon-client --dedicated`, crates/horizon-client
 //! game/interface/dedicated/mod.rs). It reads the vanilla files the supervisor writes, takes console commands on stdin and
 //! logs on stdout.
 
@@ -180,9 +180,9 @@ pub fn spawn(
 fn lease(program: &Path, command: &Command, dir: &Path) -> Result<Vec<Claim>, String> {
     let program =
         std::path::absolute(program).map_err(|e| format!("{}: {e}", program.display()))?;
-    let folder = program.parent().ok_or_else(|| {
-        format!("the game program {} has no folder", program.display())
-    })?;
+    let folder = program
+        .parent()
+        .ok_or_else(|| format!("the game program {} has no folder", program.display()))?;
     let install = folder
         .canonicalize()
         .unwrap_or_else(|_| folder.to_path_buf());
@@ -198,8 +198,8 @@ fn lease(program: &Path, command: &Command, dir: &Path) -> Result<Vec<Claim>, St
     let data = data.canonicalize().unwrap_or(data);
     let directory = std::path::absolute(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let selection = LaunchArguments::for_command(command).map_err(|e| e.to_string())?;
-    let units = holder::lease_paths(&program, &selection, &data, &directory)
-        .map_err(|e| e.to_string())?;
+    let units =
+        holder::lease_paths(&program, &selection, &data, &directory).map_err(|e| e.to_string())?;
     // A copied release has no marker of the version it came from; the game opens `.installed` in the
     // folder it runs from.
     if units
@@ -634,11 +634,16 @@ mod tests {
                 &Entities::default(),
                 None,
             ) {
-                Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
+                Err(e) if e.contains("Text file busy") && tries < 50 => {
                     tries += 1;
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
-                child => break child.unwrap().wait(),
+                child => {
+                    let (mut child, claims) = child.unwrap();
+                    let status = child.wait();
+                    drop(claims);
+                    break status;
+                }
             }
         };
         std::fs::remove_dir_all(&root).unwrap();
@@ -703,14 +708,14 @@ mod tests {
 
     #[test]
     fn a_managed_release_gets_its_marker_and_its_units() {
-        let root = std::env::temp_dir().join(format!("horizon-engine-lease-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("horizon-engine-lease-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (install, server, _data) = managed(&root);
         let program = install.join("horizon-client.exe");
         std::fs::write(&program, "game").unwrap();
         let resources = root.join("data/server-runtime/game-files/horizon-client/26.3");
-        let command =
-            horizon_server_launch::command(&program, &resources, &server, false).unwrap();
+        let command = horizon_server_launch::command(&program, &resources, &server, false).unwrap();
         // An update switches `current` to a release nobody prepared: the start prepares it.
         let claims = lease(&program, &command, &server).unwrap();
         assert!(!claims.is_empty(), "the units the game leases are held");
@@ -733,8 +738,7 @@ mod tests {
         std::fs::write(&program, "game").unwrap();
         let server = root.join("server");
         std::fs::create_dir_all(&server).unwrap();
-        let command =
-            horizon_server_launch::command(&program, &install, &server, false).unwrap();
+        let command = horizon_server_launch::command(&program, &install, &server, false).unwrap();
         // No launcher registry above the game: the game takes no leases, so nothing is written.
         assert!(lease(&program, &command, &server).unwrap().is_empty());
         assert!(!install.join(".installed").exists());
