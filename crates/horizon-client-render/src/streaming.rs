@@ -2763,17 +2763,6 @@ impl Streaming {
                         .load(std::sync::atomic::Ordering::Relaxed),
                     "forced chunk load after generation stopped"
                 );
-                // A generation that failed never produces the column, and this
-                // loop runs no sweep, the only place a failure mark is dropped:
-                // waiting would hold the server thread for ever (`/forceload`).
-                // The column stays forced and unloaded; it is asked for again
-                // once the mark clears.
-                if blocked_by_a_failed_generation(&self.failed, world, self.decorates, x, z) {
-                    log::warn!(
-                        "Horizon: the forced chunk ({x}, {z}) did not generate; it stays unloaded"
-                    );
-                    break;
-                }
                 // Pump the existing generation queue. Keep unloads for the
                 // normal owner update, which saves entities and notifies mods.
                 let mut plan = self.plan_update(world);
@@ -2782,9 +2771,25 @@ impl Streaming {
                 let (meshes, unloaded) = self.finish_update(world, plan);
                 debug_assert!(unloaded.is_empty());
                 self.free(meshes);
-                if !world.chunks.contains_key(&(x, z)) {
-                    self.wait(std::time::Duration::from_millis(5));
+                if world.chunks.contains_key(&(x, z)) {
+                    break;
                 }
+                // Once nothing is in flight, waiting again cannot change
+                // either: a column the save holds was loaded by the pump
+                // above, so the column stays unloaded, and forced, until its
+                // failure mark clears.
+                if self.generating.is_empty()
+                    && self.decorating == 0
+                    && self.finishing.is_empty()
+                    && self.viewing.is_empty()
+                    && blocked_by_a_failed_generation(&self.failed, world, self.decorates, x, z)
+                {
+                    log::warn!(
+                        "Horizon: the forced chunk ({x}, {z}) did not generate; it stays unloaded"
+                    );
+                    break;
+                }
+                self.wait(std::time::Duration::from_millis(5));
             }
         }
         changed

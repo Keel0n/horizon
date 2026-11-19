@@ -80,14 +80,25 @@ impl ChunkGenerator for Plain {
 }
 
 /// `Plain` with one column whose generation fails: its proto says so, as the
-/// generator reports a generation that threw (`ChunkGenerator::generated`).
+/// generator reports a generation that threw (`ChunkGenerator::generated`),
+/// and one the save already holds.
 struct Failing {
     failed: (i32, i32),
+    saved: (i32, i32),
 }
 
 impl ChunkGenerator for Failing {
     type Worker = ();
     fn worker(&self) {}
+    /// The one column the save already holds: the barrier must load it even
+    /// when a failed generation sits one chunk away.
+    fn load(&self, x: i32, z: i32) -> Option<Chunk> {
+        if (x, z) == self.saved {
+            Some(Chunk::empty(x, z))
+        } else {
+            None
+        }
+    }
     fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
         Box::new(Column {
             x,
@@ -121,6 +132,34 @@ impl ChunkGenerator for Failing {
         proto.downcast_ref::<Column>()?;
         Some(SectionMask::single(4))
     }
+}
+
+/// `Streaming::set_forced_loaded` on owned state, for another thread to run.
+fn force_loaded(
+    mut streaming: Streaming,
+    mut world: World,
+    x: i32,
+    z: i32,
+) -> (bool, World, Streaming) {
+    let changed = streaming.set_forced_loaded(&mut world, x, z, true);
+    (changed, world, streaming)
+}
+
+/// One forced load barrier in a thread of its own: without the failure exit
+/// it never returns, and the test has to fail rather than hang.
+fn forced_load(
+    streaming: Streaming,
+    world: World,
+    (x, z): (i32, i32),
+    never: &str,
+) -> (World, Streaming) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let barrier = thread::spawn(move || {
+        let _ = tx.send(force_loaded(streaming, world, x, z));
+    });
+    let (_changed, world, streaming) = rx.recv_timeout(Duration::from_secs(20)).expect(never);
+    barrier.join().unwrap();
+    (world, streaming)
 }
 
 #[test]
@@ -202,6 +241,8 @@ fn forced_chunks_reach_vanillas_rings() {
 /// The load barrier of a forced chunk ends when the generation it needs
 /// failed: the mark never becomes a column, and the barrier runs no sweep, the
 /// only place a mark is dropped, so waiting again would never end (#18403).
+/// It pumps the queue first, so a column the save holds still loads beside a
+/// failure.
 #[test]
 fn a_forced_load_ends_when_its_generation_failed() {
     let Some(root) = resources() else {
@@ -231,36 +272,40 @@ fn a_forced_load_ends_when_its_generation_failed() {
         hidden_states: Arc::from([]),
         part_tables: Default::default(),
     });
-    let generator = Arc::new(Failing { failed: (40, -40) });
+    let generator = Arc::new(Failing { failed: (40, -40), saved: (40, -41) });
     let mut streaming = Streaming::new(generator, context, 2);
     streaming.center = (0, 0);
     streaming.radius = 2;
-    let mut world = World::new(BlockStateId(0), 0);
-    // The barrier runs in a thread of its own: without the failure exit it
-    // never returns, and the test has to fail rather than hang.
-    let (tx, rx) = std::sync::mpsc::channel();
-    let barrier = thread::spawn(move || {
-        let changed = streaming.set_forced_loaded(&mut world, 40, -40, true);
-        let _ = tx.send((changed, world, streaming));
-    });
-    let (_changed, mut world, streaming) = rx
-        .recv_timeout(Duration::from_secs(20))
-        .expect("the forced load barrier never returned");
-    barrier.join().unwrap();
+    let world = World::new(BlockStateId(0), 0);
     // The failed generation is not finished into an empty column.
+    let (world, streaming) = forced_load(
+        streaming,
+        world,
+        (40, -40),
+        "the forced load barrier never returned",
+    );
     assert!(
         !world.chunks.contains_key(&(40, -40)),
         "a failed generation became a column"
     );
     // A column beside it needs the failed one's decoration, so its own
     // barrier has to end too.
-    let (tx, rx) = std::sync::mpsc::channel();
-    let barrier = thread::spawn(move || {
-        let changed = streaming.set_forced_loaded(&mut world, 41, -40, true);
-        let _ = tx.send((changed, world, streaming));
-    });
-    let (_changed, _world, _streaming) = rx
-        .recv_timeout(Duration::from_secs(20))
-        .expect("the forced load beside the failed column never returned");
-    barrier.join().unwrap();
+    let (world, streaming) = forced_load(
+        streaming,
+        world,
+        (41, -40),
+        "the forced load beside the failed column never returned",
+    );
+    // The barrier loads a column the save holds before it gives up: a saved
+    // column needs no decoration, so a failed neighbour must not stop it.
+    let (world, _streaming) = forced_load(
+        streaming,
+        world,
+        (40, -41),
+        "the forced load of a saved column never returned",
+    );
+    assert!(
+        world.chunks.contains_key(&(40, -41)),
+        "a saved column was dropped because a neighbour's generation failed"
+    );
 }
