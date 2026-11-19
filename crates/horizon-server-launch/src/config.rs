@@ -452,7 +452,12 @@ impl<'de> Deserialize<'de> for ParallelTick {
             Bool(bool),
             Text(String),
         }
-        match Value::deserialize(d)? {
+        // A value that is neither, a number or a table, is refused with what it takes too: serde's
+        // own "did not match any variant" alone would not name the setting or its values.
+        let value = Value::deserialize(d).map_err(|e| {
+            D::Error::custom(format!("parallel_tick: {e}; use true, false or \"auto\""))
+        })?;
+        match value {
             Value::Bool(on) => Ok(if on { Self::On } else { Self::Off }),
             // `"auto"`: the game decides. A quoted `true` or `false` reads as it does unquoted.
             Value::Text(text) => match text.as_str() {
@@ -1238,6 +1243,13 @@ keep = {keep}
         assert!(
             err.contains("true, false or \"auto\""),
             "the error lists what it takes: {err:?}"
+        );
+        // A number is neither a boolean nor a word: refused with what it takes, not with serde's
+        // "did not match any variant" alone.
+        let err = with("1").unwrap_err();
+        assert!(
+            err.contains("true, false or \"auto\""),
+            "a wrong type says what it takes too: {err:?}"
         );
     }
 
