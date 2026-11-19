@@ -29,20 +29,24 @@ fn from_env(value: Option<&str>) -> (Option<u8>, bool) {
     }
 }
 
+/// What reading `HORIZON_PARALLEL_TICK` does: the mode it forces, and, for `auto`, the Auto
+/// setting, which then decides between ticks itself.
+fn init_forced(raw: Option<&str>) -> Option<u8> {
+    let (mode, auto) = from_env(raw);
+    if auto {
+        apply_setting(ParallelTickMode::Auto);
+    }
+    mode
+}
+
 /// `HORIZON_PARALLEL_TICK`, whatever the setting says, except `auto`: that one applies the Auto
-/// setting once and forces nothing, so the machine decides (a dedicated server's `"auto"`). A later
-/// [`set_setting`] overrides it: on a client the window owns the setting (`apply_ui_settings`, a
-/// settings change or a pack reload), while a dedicated server has no window, so its `auto` stays.
+/// setting once and forces nothing, so the machine decides (a dedicated server's `"auto"`). It is
+/// read before any setting is applied ([`set_setting`]), so on a client the window's own setting
+/// (`apply_ui_settings`, a settings change or a pack reload) stands either way; a dedicated server
+/// has no window, so its `auto` stays.
 fn forced() -> Option<u8> {
     static FORCED: OnceLock<Option<u8>> = OnceLock::new();
-    *FORCED.get_or_init(|| {
-        let raw = std::env::var("HORIZON_PARALLEL_TICK").ok();
-        let (mode, auto) = from_env(raw.as_deref());
-        if auto {
-            set_setting(ParallelTickMode::Auto);
-        }
-        mode
-    })
+    *FORCED.get_or_init(|| init_forced(std::env::var("HORIZON_PARALLEL_TICK").ok().as_deref()))
 }
 
 /// The Parallel Tick setting, as last applied: by the window's settings on a client, and on a
@@ -61,9 +65,16 @@ pub fn parallel_tick() -> u8 {
     forced().unwrap_or_else(|| SHARED.load(Ordering::Relaxed))
 }
 
-/// The Parallel Tick setting, from the window's settings: On and Off apply from the next tick,
-/// and Auto starts watching the ticks again.
+/// The Parallel Tick setting, from the window's settings: it stands over the variable's `auto`.
+/// The variable is read first, and its `auto` applies the Auto setting at that reading and never
+/// after this call, so it cannot land on top of the setting.
 pub fn set_setting(mode: ParallelTickMode) {
+    let _ = forced();
+    apply_setting(mode);
+}
+
+/// The setting applied: On and Off apply from the next tick, and Auto starts watching the ticks again.
+fn apply_setting(mode: ParallelTickMode) {
     let mode = mode as u8;
     if SETTING.swap(mode, Ordering::Relaxed) != mode {
         *AUTO.lock().unwrap_or_else(PoisonError::into_inner) = Auto::new();
@@ -451,6 +462,25 @@ mod tests {
         for junk in ["", "2", "sometimes", "AUTO", " on"] {
             assert_eq!(from_env(Some(junk)), (None, false), "{junk:?}");
         }
+    }
+
+    /// The variable's `auto` applies the Auto setting when the variable is read, and a setting
+    /// applied after that stands: `set_setting` reads the variable first, so Auto cannot land on
+    /// top of a setting the window has applied.
+    #[test]
+    fn a_setting_applied_after_the_reading_stands() {
+        assert_eq!(init_forced(Some("auto")), None, "auto forces no mode");
+        assert_eq!(
+            SETTING.load(Ordering::Relaxed),
+            ParallelTickMode::Auto as u8,
+            "auto puts the setting in Auto"
+        );
+        set_setting(ParallelTickMode::Off);
+        assert_eq!(
+            SETTING.load(Ordering::Relaxed),
+            ParallelTickMode::Off as u8,
+            "the setting stands"
+        );
     }
 
     /// Auto keeps a quiet world on one thread, shares a heavy tick only after two heavy windows,
