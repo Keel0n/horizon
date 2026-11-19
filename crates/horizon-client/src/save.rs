@@ -4090,7 +4090,10 @@ impl Level {
                 ),
             ),
             ("playerGameType", Tag::Int(self.mode())),
-            ("Inventory", keep_writable("inventory", Tag::List(inventory))),
+            (
+                "Inventory",
+                keep_writable("inventory", Tag::List(inventory)),
+            ),
             (
                 "EnderItems",
                 keep_writable("ender chest", encode_items(&self.ender_items)),
@@ -8598,10 +8601,8 @@ mod tests {
     /// instead of failing whole (#18384).
     #[test]
     fn an_item_past_the_save_depth_limit_is_dropped_from_the_player_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-deep-item-save-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("horizon-deep-item-save-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         // One compound per level, nested here by a loop: the item's depth is
         // this test's own, and only the bound it passes comes from `Limits`.
