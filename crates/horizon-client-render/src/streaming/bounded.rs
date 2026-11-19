@@ -15,6 +15,25 @@ pub(super) fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
     candidates.sort_unstable();
 }
 
+/// The mesh time one worker's columns may take in a tick: a quarter of a 20 Hz
+/// tick (Minecraft's 50 ms), so the pool starts a few heavy columns per tick
+/// rather than every idle worker's at once, and a heavy column's tail does not
+/// run under the next tick's light and generate jobs.
+pub(super) const MESH_SLICE_SHARE_NANOS: u64 = 12_500_000;
+
+/// Whether one more column of `cost` fits the slice (issue #18239). `spent` is
+/// what the columns already in flight (or already admitted) cost, `budget` the
+/// slice for all workers, `None` until the mesh cost estimate has warmed up —
+/// then nothing is priced and this says yes, exactly the room check before it.
+/// The first column always goes in: one dearer than the whole slice would
+/// otherwise wait for a room it can never get, and the queue would never drain.
+pub(super) fn fits(spent: u64, cost: u64, admitted: usize, budget: Option<u64>) -> bool {
+    let Some(budget) = budget else {
+        return true;
+    };
+    admitted == 0 || spent.saturating_add(cost) <= budget
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

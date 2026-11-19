@@ -2299,7 +2299,24 @@ impl Streaming {
         // them until the system swapped.
         let room = (self.workers * 32).saturating_sub(self.meshing.len() + self.upload_backlog);
         nearest_first(&mut candidates, room);
+        // The same queue also fits a quarter of a tick's meshing per worker,
+        // priced from what mesh jobs have cost lately (`job_stats`): a worker
+        // still inside one heavy column is not handed the next, so the tick's
+        // seven jobs don't all run past it, holding a 3x3 snapshot made stale
+        // for whoever reaches it last. Columns past the slice stay in
+        // `dirty_sections` — `take_column` runs only for an admitted one — and
+        // the next tick's `complete_commit` asks for them again at the same
+        // rank. Until the estimate warms up `fits` prices nothing, and this is
+        // the room check it was (#18239).
+        let estimate = job_stats::mesh_cost_ns();
+        let budget = estimate.map(|_| self.workers as u64 * bounded::MESH_SLICE_SHARE_NANOS);
+        let mut spent = estimate.map_or(0, |cost| self.meshing.len() as u64 * cost);
+        let mut admitted = 0;
         for (_, x, z, sections) in candidates.drain(..) {
+            let cost = estimate.map_or(0, |cost| cost.saturating_mul(sections.len() as u64));
+            if !bounded::fits(spent, cost, admitted, budget) {
+                continue;
+            }
             let Some(region) = Self::region(world, x, z) else {
                 continue;
             };
@@ -2321,6 +2338,8 @@ impl Streaming {
                     ),
                 );
             }
+            spent += cost;
+            admitted += 1;
         }
         self.cover_current = false;
         self.light_scratch = light;
