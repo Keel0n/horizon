@@ -5,27 +5,47 @@
 //!
 //! Whether a tick's phases share their work is the Parallel Tick setting's
 //! (`graphics::ParallelTickMode`: Off, Auto or On), decided between ticks for the next one
-//! ([`after_tick`]) and never during one. `HORIZON_PARALLEL_TICK` wins over the setting, and is
-//! all a dedicated server follows (`server.toml`'s `parallel_tick`).
+//! ([`after_tick`]) and never during one. `HORIZON_PARALLEL_TICK` wins over the setting, except
+//! `auto`: it puts the setting itself in Auto and lets the machine decide, which is how a
+//! dedicated server gets Auto (`server.toml`'s `parallel_tick = "auto"` or the variable).
 use crate::graphics::ParallelTickMode;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-/// `HORIZON_PARALLEL_TICK`, whatever the setting says: `0` keeps every tick serial, `1` turns the
-/// server tick's parallel phases on, and `verify` does too, also checking the phases that can be
-/// checked against the serial code. Unset, the setting decides.
+/// What `HORIZON_PARALLEL_TICK` asked for: the mode it forces, and whether it asks for the Auto
+/// setting instead of forcing one.
+///
+/// `0` keeps every tick serial, `1` turns the server tick's parallel phases on, `verify` does too
+/// and also checks the phases that can be checked against the serial code, and `auto` hands the
+/// decision to the machine (the setting), as the window's settings screen would. Anything else,
+/// and no variable at all, leaves the setting alone.
+fn from_env(value: Option<&str>) -> (Option<u8>, bool) {
+    match value {
+        Some("0" | "off" | "false") => (Some(0), false),
+        Some("1" | "on" | "true") => (Some(1), false),
+        Some("verify") => (Some(2), false),
+        Some("auto") => (None, true),
+        _ => (None, false),
+    }
+}
+
+/// `HORIZON_PARALLEL_TICK`, whatever the setting says, except `auto`: that one applies the Auto
+/// setting once and forces nothing, so the machine decides (a dedicated server's `"auto"`).
 fn forced() -> Option<u8> {
     static FORCED: OnceLock<Option<u8>> = OnceLock::new();
-    *FORCED.get_or_init(|| match std::env::var("HORIZON_PARALLEL_TICK").as_deref() {
-        Ok("0" | "off" | "false") => Some(0),
-        Ok("1" | "on" | "true") => Some(1),
-        Ok("verify") => Some(2),
-        _ => None,
+    *FORCED.get_or_init(|| {
+        let raw = std::env::var("HORIZON_PARALLEL_TICK").ok();
+        let (mode, auto) = from_env(raw.as_deref());
+        if auto {
+            set_setting(ParallelTickMode::Auto);
+        }
+        mode
     })
 }
 
-/// The Parallel Tick setting, as the window last applied it; Off until it does (a dedicated
-/// server never does).
+/// The Parallel Tick setting, as last applied: by the window's settings on a client, and on a
+/// dedicated server by `HORIZON_PARALLEL_TICK=auto` or `server.toml`'s `parallel_tick = "auto"`,
+/// which starts the game with that variable. Off until one of them does.
 static SETTING: AtomicU8 = AtomicU8::new(0);
 /// Whether the server's next tick shares its phases' work, by the setting ([`after_tick`]).
 static SHARED: AtomicU8 = AtomicU8::new(0);
@@ -55,7 +75,8 @@ pub fn set_setting(mode: ParallelTickMode) {
 
 /// The server thread, after a tick that took `ms`, `cpu_ms` of them on the processor (where the
 /// system tells): decides whether the next tick shares its phases' work. Only Auto has something
-/// to decide.
+/// to decide. A dedicated server feeds it from its tick loop as the integrated one does, when the
+/// host asks for Auto (`parallel_tick = "auto"`, `HORIZON_PARALLEL_TICK=auto`).
 pub fn after_tick(ms: f32, cpu_ms: Option<f32>) {
     if forced().is_some() || SETTING.load(Ordering::Relaxed) != ParallelTickMode::Auto as u8 {
         return;
@@ -408,6 +429,27 @@ pub fn par_map_on<T: Sync, R: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `HORIZON_PARALLEL_TICK` forces a mode for `0`, `1` and `verify`, and asks for Auto for
+    /// `auto` instead of forcing one, so the machine still decides; anything else, and no variable,
+    /// leaves the setting alone.
+    #[test]
+    fn the_variable_asks_for_auto_without_forcing_it() {
+        assert_eq!(from_env(None), (None, false));
+        assert_eq!(from_env(Some("auto")), (None, true), "the machine decides");
+        assert_eq!(from_env(Some("0")), (Some(0), false));
+        assert_eq!(from_env(Some("1")), (Some(1), false));
+        assert_eq!(from_env(Some("verify")), (Some(2), false));
+        for off in ["off", "false"] {
+            assert_eq!(from_env(Some(off)), (Some(0), false), "{off}");
+        }
+        for on in ["on", "true"] {
+            assert_eq!(from_env(Some(on)), (Some(1), false), "{on}");
+        }
+        for junk in ["", "2", "sometimes", "AUTO", " on"] {
+            assert_eq!(from_env(Some(junk)), (None, false), "{junk:?}");
+        }
+    }
 
     /// Auto keeps a quiet world on one thread, shares a heavy tick only after two heavy windows,
     /// keeps the trial when the ticks got faster, goes back once they are light, and after a
