@@ -959,7 +959,7 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
             Job::Finish(..) => 3,
             Job::Light(..) => 4,
             Job::Mesh(..) => job_stats::MESH_KIND,
-            _ => 6,
+            _ => job_stats::OTHER_KIND,
         };
         // The mesh job is timed always: the admission check in `complete_commit` prices columns
         // from what the mesh jobs cost, and a statistic that only runs when someone turned it on
@@ -967,7 +967,7 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
         // reads are a fraction of a percent of it; the other jobs (saves, light views, freed
         // meshes) are many and short and stay counted, not timed, so their clock reads don't cost
         // more than they do.
-        let started = (kind != 6 && (enabled || kind == job_stats::MESH_KIND))
+        let started = (kind != job_stats::OTHER_KIND && (enabled || kind == job_stats::MESH_KIND))
             .then(|| crate::spans::thread_cpu().unwrap_or_default());
         let _tag = horizon_threads::heap_tag(match &job.job {
             Job::Generate(..) => "stream.generate",
@@ -1142,7 +1142,7 @@ mod forced_ring;
 mod mesh_job;
 mod relight_now;
 mod viewed_meshing;
-use bounded::nearest_first;
+use bounded::{MESH_SLICE_NANOS, fits, nearest_first};
 use dynamic_emission::light_region_ready;
 use forced_cover::ForcedCover;
 use mesh_job::{Faces, mesh_section};
@@ -2320,10 +2320,10 @@ impl Streaming {
             let cost = estimate.map_or(0, |cost| cost.saturating_mul(sections.len() as u64));
             let left = estimate.map(|cost| {
                 (self.workers as u64)
-                    .saturating_mul(bounded::MESH_SLICE_SHARE_NANOS)
+                    .saturating_mul(MESH_SLICE_NANOS)
                     .saturating_sub((self.meshing.len() as u64).saturating_mul(cost))
             });
-            if !bounded::fits(left, cost, admitted == 0 && self.meshing.is_empty()) {
+            if !fits(left, cost, admitted == 0 && self.meshing.is_empty()) {
                 continue;
             }
             let Some(region) = Self::region(world, x, z) else {

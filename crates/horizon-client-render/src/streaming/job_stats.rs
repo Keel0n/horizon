@@ -4,6 +4,10 @@ pub const KINDS: [&str; 7] = [
 ];
 /// The slot of `KINDS` the mesh job holds: the one the admission check prices.
 pub(super) const MESH_KIND: usize = 5;
+/// The slot of the jobs that are counted rather than timed: with statistics off
+/// only the mesh job reads the clock, and these (saves, light views, freed
+/// meshes) are many and short, so the two reads would cost more than they do.
+pub(super) const OTHER_KIND: usize = 6;
 /// Samples the mesh estimate needs before the admission check trusts it; a job
 /// that costs a millisecond and more settles in a few.
 const MESH_WARMUP: u64 = 4;
@@ -37,26 +41,16 @@ pub fn take() -> Vec<(&'static str, u64, u64)> {
         })
         .collect()
 }
-/// One EWMA step: an eighth of the way from `prev` to `sample`. In i64 so a
-/// cheaper sample pulls the estimate down as fast as a dearer one lifts it;
-/// u64's shift of a subtraction could only ever grow it.
-pub(super) fn ewma_step(prev: u64, sample: u64) -> u64 {
+/// One estimate step: an eighth of the way from `prev` to `sample`, or the
+/// sample itself when there is none to step from yet. In i64 so a cheaper sample
+/// pulls the estimate down as fast as a dearer one lifts it; u64's shift of a
+/// subtraction could only ever grow it.
+fn ewma(prev: u64, sample: u64, samples: u64) -> u64 {
+    if samples == 0 {
+        return sample;
+    }
     let (prev, sample) = (prev as i64, sample as i64);
     (prev + ((sample - prev) >> MESH_EWMA_SHIFT)).max(0) as u64
-}
-/// What a sample makes of the estimate: the first one seeds it, rather than
-/// creeping up from zero an eighth at a time; the rest step toward it.
-pub(super) fn ewma_next(prev: u64, sample: u64, samples: u64) -> u64 {
-    if samples == 0 {
-        sample
-    } else {
-        ewma_step(prev, sample)
-    }
-}
-/// The estimate as the admission check reads it: `None` while it is cold or
-/// zero, so a statistic that has seen nothing bounds nothing.
-pub(super) fn cost_ready(samples: u64, cost: u64) -> Option<u64> {
-    (samples >= MESH_WARMUP && cost > 0).then_some(cost)
 }
 /// Feed one finished mesh job's cost to the estimate. Every worker calls this,
 /// so it is two relaxed atomics and a sample lost to a race costs one step of
@@ -64,47 +58,51 @@ pub(super) fn cost_ready(samples: u64, cost: u64) -> Option<u64> {
 pub(super) fn observe_mesh(nanos: u64) {
     let samples = MESH_SAMPLES.load(Ordering::Relaxed);
     let prev = MESH_EWMA.load(Ordering::Relaxed);
-    MESH_EWMA.store(ewma_next(prev, nanos, samples), Ordering::Relaxed);
+    MESH_EWMA.store(ewma(prev, nanos, samples), Ordering::Relaxed);
     MESH_SAMPLES.fetch_add(1, Ordering::Relaxed);
 }
 /// What one mesh job costs, once the estimate has warmed up; `None` until then.
-pub fn mesh_cost_ns() -> Option<u64> {
-    cost_ready(
-        MESH_SAMPLES.load(Ordering::Relaxed),
-        MESH_EWMA.load(Ordering::Relaxed),
-    )
+/// `None` too where the platform has no thread CPU clock (`spans::thread_cpu`):
+/// every job then measures zero, the estimate stays cold and the admission check
+/// prices nothing — the behaviour before #18239, kept as that platform's
+/// fallback.
+pub(super) fn mesh_cost_ns() -> Option<u64> {
+    let cost = MESH_EWMA.load(Ordering::Relaxed);
+    (MESH_SAMPLES.load(Ordering::Relaxed) >= MESH_WARMUP && cost > 0).then_some(cost)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The estimate follows the cost both ways and has caught up with a step
-    /// after about twenty samples; the first sample seeds it rather than
-    /// creeping up from zero an eighth at a time.
+    /// The estimate follows the cost both ways: the first sample seeds it rather
+    /// than creeping up from zero an eighth at a time, and twenty samples follow
+    /// a step in cost to within a few percent.
     #[test]
     fn the_mesh_estimate_follows_the_cost_it_is_fed() {
-        assert_eq!(ewma_next(0, 30_000_000, 0), 30_000_000);
-        assert!(ewma_step(0, 30_000_000) < 30_000_000);
+        assert_eq!(ewma(0, 30_000_000, 0), 30_000_000);
+        assert!(ewma(0, 30_000_000, 1) < 30_000_000);
         // Seeded at 5 ms by a first, cheap job, then twenty 30 ms ones.
-        let mut cost = ewma_next(0, 5_000_000, 0);
+        let mut cost = ewma(0, 5_000_000, 0);
         for _ in 0..20 {
-            cost = ewma_step(cost, 30_000_000);
+            cost = ewma(cost, 30_000_000, 1);
         }
         assert!((25_000_000..=30_000_000).contains(&cost), "{cost}");
         // A cheaper job pulls the estimate down as fast as a dearer lifts it.
-        assert!(ewma_step(cost, 10_000_000) < cost);
-        assert!(ewma_step(cost, 60_000_000) > cost);
+        assert!(ewma(cost, 10_000_000, 1) < cost);
+        assert!(ewma(cost, 60_000_000, 1) > cost);
     }
 
-    /// A cold estimate is no estimate at all: the admission check reading it as
-    /// a cost of zero would refuse nothing, but reading zero as a warmed-up cost
-    /// would refuse every column past the first.
+    /// No estimate until a few mesh jobs have priced it: a statistic that has
+    /// seen nothing bounds nothing (`fits` then prices nothing), and once warmed
+    /// up it does. No other test feeds these process-wide statics, so this one
+    /// reads them cold and then warms them.
     #[test]
-    fn a_cold_estimate_is_no_estimate_at_all() {
-        assert_eq!(cost_ready(0, 0), None);
-        assert_eq!(cost_ready(MESH_WARMUP - 1, 30_000_000), None);
-        assert_eq!(cost_ready(MESH_WARMUP, 0), None);
-        assert_eq!(cost_ready(MESH_WARMUP, 30_000_000), Some(30_000_000));
+    fn a_cold_mesh_estimate_prices_nothing() {
+        assert_eq!(mesh_cost_ns(), None);
+        for _ in 0..MESH_WARMUP {
+            observe_mesh(30_000_000);
+        }
+        assert_eq!(mesh_cost_ns(), Some(30_000_000));
     }
 }

@@ -19,7 +19,7 @@ pub(super) fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
 /// tick (Minecraft's 50 ms), so the pool starts a few heavy columns per tick
 /// rather than every idle worker's at once, and a heavy column's tail does not
 /// run under the next tick's light and generate jobs.
-pub(super) const MESH_SLICE_SHARE_NANOS: u64 = 12_500_000;
+pub(super) const MESH_SLICE_NANOS: u64 = 12_500_000;
 
 /// Whether one more column of `cost` fits what is left of the mesh slice (issue
 /// #18239). `left` is the slice for all workers less what the columns in flight
