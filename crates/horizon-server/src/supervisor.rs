@@ -267,7 +267,9 @@ pub fn run(dir: &Path) -> Result<(), String> {
         );
         shared.set_phase(Phase::Starting);
         let transfers = config.transfer.engine_arg();
-        let mut child = engine::spawn(
+        // The claims on the folders the game leases live as long as the game: the next start takes
+        // them again on the release `current` points at then.
+        let (mut child, _leases) = engine::spawn(
             &program,
             &resources,
             dir,
@@ -275,8 +277,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             config.engine.parallel_tick,
             &config.entities,
             transfers.as_deref(),
-        )
-        .map_err(|e| format!("{}: {e}", program.display()))?;
+        )?;
         {
             let mut state = shared.state.lock().unwrap();
             state.engine_pid = Some(child.id());

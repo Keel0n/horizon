@@ -118,6 +118,10 @@ fn a_release_carries_the_completion_marker_the_game_opens() {
     set_up_in(&rt, &version, "v1", "26.3").unwrap();
     assert!(marker.is_file());
     assert_eq!(fs::metadata(&marker).unwrap().len(), 0);
+    // The engine opens an empty regular file: a marker that is not one is replaced, not trusted.
+    fs::write(&marker, "installed").unwrap();
+    set_up_in(&rt, &version, "v1", "26.3").unwrap();
+    assert_eq!(fs::metadata(&marker).unwrap().len(), 0);
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -174,7 +178,7 @@ fn the_engine_finds_every_unit_it_leases_registered() {
         .arg("--resources")
         .arg(game_files(&rt, "26.3"))
         .current_dir(&server);
-    let leases = lease_engine(&engine).unwrap();
+    let leases = lease_engine(&engine, &data).unwrap();
 
     // What the game does at start: lock each unit `lease_paths` names, creating none.
     let data = data.canonicalize().unwrap();
@@ -213,6 +217,8 @@ fn the_engine_finds_every_unit_it_leases_registered() {
 #[test]
 fn an_engine_from_outside_the_launcher_is_left_alone() {
     let root = scratch("engine-outside");
+    let data = root.join("data");
+    fs::create_dir_all(&data).unwrap();
     let version = root.join("version");
     fs::create_dir_all(&version).unwrap();
     fs::write(version.join(crate::backend::CLIENT), "game").unwrap();
@@ -220,7 +226,16 @@ fn an_engine_from_outside_the_launcher_is_left_alone() {
     engine.arg("--resources").arg(version.join("resources"));
     // `[engine] engine.path` and the PATH can name an engine of the player's: the game takes no
     // leases there, and the launcher writes neither a marker nor a claim into that folder.
-    assert!(lease_engine(&engine).unwrap().is_empty());
+    assert!(lease_engine(&engine, &data).unwrap().is_empty());
+    assert!(!version.join(".installed").exists());
+    // Another installation inside the launcher's data (a version its cleanup invalidated) is not the
+    // launcher's runtime either: completing it would list a deleted version as installed again.
+    let version = data.join("versions/v9");
+    fs::create_dir_all(&version).unwrap();
+    fs::write(version.join(crate::backend::CLIENT), "game").unwrap();
+    let mut engine = Command::new(version.join(crate::backend::CLIENT));
+    engine.arg("--resources").arg(version.join("resources"));
+    assert!(lease_engine(&engine, &data).unwrap().is_empty());
     assert!(!version.join(".installed").exists());
     fs::remove_dir_all(&root).unwrap();
 }
