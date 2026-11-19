@@ -58,7 +58,7 @@ path = ""                    # the game program; empty: the one installed beside
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true      # start the game again when it crashes
 low_memory = false           # true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time
-parallel_tick = false        # true: the server tick shares its work among helper threads (docs/hosting.md)
+parallel_tick = false        # true: the tick shares its work among helper threads; "auto": it decides (docs/hosting.md)
 
 [backups]
 every = "6h"                 # automatic backups while the server runs: 30m, 6h, 1d...; "0" turns them off
@@ -415,8 +415,66 @@ pub struct Engine {
     pub restart_on_crash: bool,
     /// The game without transparent huge pages (docs/hosting.md): less memory, slightly slower ticks.
     pub low_memory: bool,
-    /// The game's parallel tick phases (`HORIZON_PARALLEL_TICK=1`), for hosts that cannot set the variable.
-    pub parallel_tick: bool,
+    /// The game's parallel tick phases (`HORIZON_PARALLEL_TICK=1`, or `auto` for the machine to decide),
+    /// for hosts that cannot set the variable.
+    pub parallel_tick: ParallelTick,
+}
+
+/// `[engine] parallel_tick`: whether the server tick shares its parallel phases' work among helper
+/// threads, and whether it always does or only while it is heavy (docs/hosting.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ParallelTick {
+    /// Every tick stays on one thread: vanilla's, and the default.
+    #[default]
+    Off,
+    /// Every tick's parallel phases share their work.
+    On,
+    /// The game decides between ticks: Auto shares the heavy ones only.
+    Auto,
+}
+
+impl Serialize for ParallelTick {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Off => s.serialize_bool(false),
+            Self::On => s.serialize_bool(true),
+            Self::Auto => s.serialize_str("auto"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ParallelTick {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Value;
+        impl serde::de::Visitor<'_> for Value {
+            type Value = ParallelTick;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("true, false or \"auto\"")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, on: bool) -> Result<ParallelTick, E> {
+                Ok(if on {
+                    ParallelTick::On
+                } else {
+                    ParallelTick::Off
+                })
+            }
+
+            /// `"auto"`: the game decides. A quoted `true` or `false` reads as it does unquoted.
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<ParallelTick, E> {
+                match text {
+                    "auto" => Ok(ParallelTick::Auto),
+                    "true" => Ok(ParallelTick::On),
+                    "false" => Ok(ParallelTick::Off),
+                    other => Err(E::custom(format!(
+                        "parallel_tick is {other:?}: use true, false or \"auto\""
+                    ))),
+                }
+            }
+        }
+        d.deserialize_any(Value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -677,7 +735,7 @@ impl Default for Engine {
             resources: String::new(),
             restart_on_crash: true,
             low_memory: false,
-            parallel_tick: false,
+            parallel_tick: ParallelTick::Off,
         }
     }
 }
@@ -1154,6 +1212,43 @@ keep = {keep}
     fn template_is_the_default() {
         assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
         assert_eq!(render(&Config::default()), TEMPLATE);
+    }
+
+    /// `[engine] parallel_tick` reads `true`, `false` and `"auto"`: the older two still load as they
+    /// always did, and Auto is the third. It is written back the way it was read, and anything else
+    /// is refused rather than silently read as off.
+    #[test]
+    fn parallel_tick_is_off_on_or_auto() {
+        let with = |value: &str| Config::parse(&format!("[engine]\nparallel_tick = {value}\n"));
+        assert_eq!(Config::default().engine.parallel_tick, ParallelTick::Off);
+        assert_eq!(with("true").unwrap().engine.parallel_tick, ParallelTick::On);
+        assert_eq!(
+            with("false").unwrap().engine.parallel_tick,
+            ParallelTick::Off
+        );
+        assert_eq!(
+            with("\"auto\"").unwrap().engine.parallel_tick,
+            ParallelTick::Auto
+        );
+        for (value, engine) in [
+            ("true", ParallelTick::On),
+            ("false", ParallelTick::Off),
+            ("\"auto\"", ParallelTick::Auto),
+        ] {
+            let config = with(value).unwrap();
+            assert_eq!(config.engine.parallel_tick, engine);
+            let written = render(&config);
+            assert!(
+                written.contains(&format!("parallel_tick = {value}")),
+                "{value} was written as:\n{written}"
+            );
+            assert_eq!(Config::parse(&written).unwrap(), config);
+        }
+        let err = with("\"sometimes\"").unwrap_err();
+        assert!(
+            err.contains("true, false or \"auto\""),
+            "the error lists what it takes: {err:?}"
+        );
     }
 
     /// docs/hosting.md shows `server.toml` with its defaults in the `toml` block that starts with `[server]`:
