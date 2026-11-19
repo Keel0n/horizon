@@ -622,7 +622,11 @@ impl MultifaceGrowthFeature {
         let name = super::density::identifier(&serde_json::from_str::<String>(
             required(&object, "block")?.get(),
         )?)?;
-        let block = blocks
+        // Native resolves the name against every registered block
+        // (BuiltInRegistries.BLOCK) and only then checks its class, so a mod's
+        // block gets here too.
+        let block = bindings
+            .registry()
             .default_state(&name)
             .ok_or(DecodeError::Field("multiface block"))?;
         let sculk = multiface_class(bindings.multiface_classes.as_ref(), &name)?;
