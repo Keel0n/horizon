@@ -1324,5 +1324,6 @@
   "horizon.options.menu_navigation": "Menu Navigation",
   "horizon.options.menu_pointer": "Pointer",
   "horizon.screenshot.canceled": "Screenshot canceled",
-  "horizon.screenshot.success_hdr": "Saved screenshot as %s and %s"
+  "horizon.screenshot.success_hdr": "Saved screenshot as %s and %s",
+  "horizon.graphics.os_power_warning": "The OS is already holding this game back: its energy saver or the CPU's heat, not these settings."
 }

@@ -22,6 +22,12 @@ use crate::{
 /// The language key of the screen's name.
 const TITLE: &str = "Graphics";
 
+/// The language key of the Performance page's warning while the OS itself holds the game back:
+/// its energy saver, or a CPU it limits to stay cool (`horizon_system::power`). The page shows it
+/// above its own description, in the warning colour, and says nothing while the OS isn't limiting
+/// anything.
+const OS_POWER_WARNING: &str = "horizon.graphics.os_power_warning";
+
 /// The screen's pages, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -1512,6 +1518,9 @@ impl Screen for GraphicsScreen {
             g::translucent_batching_offered(),
             g::gpu_culling_offer(),
             g::reduced_far_detail_suggested(),
+            // The machine's own state, a few atomic loads of the sampler's snapshot and never the
+            // OS itself: the Performance page's warning follows it while that page is open.
+            horizon_system::power::sample().limited(),
         );
         shell::stamp_of(&(read(s), s.fullbright_held, &s.running_pack, offers))
     }
@@ -1520,7 +1529,11 @@ impl Screen for GraphicsScreen {
             id: page,
             name: lang::get(page.name()),
             about: lang::get(page.about()),
-            warning: None,
+            // What the machine is doing is no setting of this screen: when the OS already holds
+            // the game back, the page that sells power use says so before the player blames a
+            // switch for it.
+            warning: (page == Page::Performance && horizon_system::power::sample().limited())
+                .then(|| lang::get(OS_POWER_WARNING)),
             groups: groups
                 .into_iter()
                 .map(|(name, settings)| Group {
