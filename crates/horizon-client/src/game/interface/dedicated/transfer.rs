@@ -57,7 +57,7 @@ impl Game<'_> {
     pub(super) fn stop_now(&mut self, state: &super::ServerState) -> bool {
         // A panic on another thread ends the process once this run has saved
         // (`dedicated::EmergencyStop`): no transfer wait holds it back.
-        if super::emergency_stop_requested() {
+        if self.stopped_by_a_crash() {
             return true;
         }
         let asked = std::mem::take(&mut state.lists.lock().unwrap().stop);

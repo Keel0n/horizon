@@ -862,6 +862,10 @@ impl Game<'_> {
             }
         }
         loop {
+            if self.stopped_by_a_crash() {
+                log::warn!("Horizon: a worker panicked while the world was loading");
+                return;
+            }
             self.update_chunk_tickets();
             let levels = self.tickets.levels();
             let streaming = &self.streaming;

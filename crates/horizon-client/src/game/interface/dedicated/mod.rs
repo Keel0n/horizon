@@ -922,7 +922,7 @@ struct ServerState {
 /// (`stop_dedicated` → `finish_server_save`), as single player's server does
 /// (`world/integrated.rs`).
 #[derive(Default)]
-struct EmergencyStop {
+pub(super) struct EmergencyStop {
     /// The server thread, known once `run_dedicated` starts.
     server: OnceLock<std::thread::ThreadId>,
     /// The crashing thread asked the tick loop to stop.
@@ -963,19 +963,6 @@ impl EmergencyStop {
         }
         true
     }
-}
-
-/// The run in flight, for `stop_now` (`transfer.rs`), which runs on the tick
-/// loop's thread and cannot see the hook's own handle.
-static EMERGENCY_STOP: Mutex<Option<Arc<EmergencyStop>>> = Mutex::new(None);
-
-/// Whether a crashing thread asked the dedicated server to stop and save.
-pub(super) fn emergency_stop_requested() -> bool {
-    EMERGENCY_STOP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .is_some_and(|emergency| emergency.stop_requested())
 }
 
 /// Marks the run finished however it ends, so a waiting hook never outlives it.
@@ -1103,7 +1090,7 @@ impl Game<'_> {
         // asks the tick loop to stop and waits for the teardown's own save.
         let emergency = Arc::new(EmergencyStop::default());
         _ = emergency.server.set(std::thread::current().id());
-        *EMERGENCY_STOP.lock().unwrap_or_else(|e| e.into_inner()) = Some(emergency.clone());
+        self.emergency_save = Some(emergency.clone());
         let registered = horizon_client::crash::on_emergency_save({
             let emergency = emergency.clone();
             move || {
@@ -1114,9 +1101,17 @@ impl Game<'_> {
         let result = self.run_server_lifecycle(true, Self::run_dedicated_inner);
         // Everything the stop saves has been saved: the crashing worker may go.
         drop(finished);
-        *EMERGENCY_STOP.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.emergency_save = None;
         drop(registered);
         result
+    }
+
+    /// Whether a panic on another thread asked this server to stop and save
+    /// (`EmergencyStop`): the startup waits end and the ordinary teardown saves.
+    pub(super) fn stopped_by_a_crash(&self) -> bool {
+        self.emergency_save
+            .as_ref()
+            .is_some_and(|emergency| emergency.stop_requested())
     }
 
     fn run_dedicated_inner(&mut self, startup_began: &mut bool) -> Result<()> {
@@ -1730,6 +1725,9 @@ impl Game<'_> {
         if self.is_dedicated_server() {
             if self.level.spawn.is_none() {
                 let [x, y, z] = loop {
+                    if self.stopped_by_a_crash() {
+                        return Err("a worker panicked while the world was loading".into());
+                    }
                     self.update_world();
                     if let Some(pos) = self.find_world_spawn()? {
                         break pos;
