@@ -15,6 +15,8 @@ impl Game<'_> {
             scoping: self.camera_type.is_first_person() && self.scoping(),
             invert_x: self.settings.invert_x,
             invert_y: self.settings.invert_y,
+            spyglass_polar_look: self.settings.extras.spyglass_polar_look,
+            pitch: self.pitch,
         }
     }
     /// `MouseHandler.handleAccumulatedMovement` and `Entity.turn`, once per frame.

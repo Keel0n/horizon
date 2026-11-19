@@ -188,6 +188,9 @@ fn mouse(c: &Value, out: &mut impl Write) -> Result<()> {
         scoping: b(&c["scoping"]),
         invert_x: b(&c["ix"]),
         invert_y: b(&c["iy"]),
+        // Horizon's polar spyglass look: a case without the keys is vanilla's turn.
+        spyglass_polar_look: c.get("polar").and_then(Value::as_bool).unwrap_or(false),
+        pitch: c.get("pitch").map(|v| db(v) as f32).unwrap_or(0.0),
     };
     let (active, grabbed) = (b(&c["active"]), b(&c["grabbed"]));
     let mut handler = MouseLook::default();
