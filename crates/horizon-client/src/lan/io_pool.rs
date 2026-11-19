@@ -312,7 +312,9 @@ struct Pool {
 }
 
 /// The pool, started the first time: one thread per two cores, the automatic
-/// size Battery Mode halves.
+/// size Battery Mode halves. It used to count `available_parallelism` itself;
+/// through `horizon_threads` now, `HORIZON_WORKER_THREADS` caps it too, as
+/// [`horizon_threads::worker_count`] says it caps every pool.
 fn pool() -> Result<&'static Pool, String> {
     static POOL: OnceLock<Result<Pool, String>> = OnceLock::new();
     let threads = horizon_threads::sizing::for_pool(horizon_threads::sizing::Pool::Net);
