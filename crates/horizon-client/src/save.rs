@@ -3541,9 +3541,10 @@ pub struct Level {
 /// stack it leaves out: the writer refuses a list or compound at
 /// `Limits::saved().max_depth` (`Writer::payload`), and the player compound is
 /// depth 0, so an `Inventory` or `EnderItems` element and an `equipment` value
-/// sit at depth 2.
+/// sit at depth 2. [`nbt::within_writer_depth`] applies the writer's own rule,
+/// including the synthetic layer it puts around a mixed-type list's elements.
 fn stack_fits_the_file(kind: &str, tag: &Tag) -> bool {
-    if nbt::within_depth(tag, Limits::saved().max_depth - 2) {
+    if nbt::within_writer_depth(tag, Limits::saved().max_depth - 2) {
         return true;
     }
     log::warn!(
