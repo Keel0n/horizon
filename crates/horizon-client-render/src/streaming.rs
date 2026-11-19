@@ -2318,13 +2318,13 @@ impl Streaming {
         // until the estimate warms up `fits` prices nothing, and this is the room
         // check it was (#18239).
         let estimate = job_stats::mesh_cost_ns();
+        let slice = (self.workers as u64).saturating_mul(MESH_SLICE_NANOS);
         for (_, x, z, sections) in candidates.drain(..) {
             let cost = estimate.map_or(0, |cost| cost.saturating_mul(sections.len() as u64));
-            let left = estimate.map(|cost| {
-                (self.workers as u64)
-                    .saturating_mul(MESH_SLICE_NANOS)
-                    .saturating_sub((self.meshing.len() as u64).saturating_mul(cost))
-            });
+            // Recomputed per column on purpose: `meshing` grows as the loop
+            // admits, and that growth is what prices the sections just taken.
+            let left = estimate
+                .map(|cost| slice.saturating_sub((self.meshing.len() as u64).saturating_mul(cost)));
             if !fits(left, cost, self.meshing.is_empty()) {
                 continue;
             }
