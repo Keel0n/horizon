@@ -149,7 +149,14 @@ fn forced_chunks_reach_vanillas_rings() {
         return;
     };
     let context = worker_context(&root);
-    let mut streaming = Streaming::new(Arc::new(Plain { failed: None, saved: None }), context, 2);
+    let mut streaming = Streaming::new(
+        Arc::new(Plain {
+            failed: None,
+            saved: None,
+        }),
+        context,
+        2,
+    );
     // The player stands far away: only the forced chunk's own rings are
     // generated.
     streaming.center = (0, 0);
@@ -207,7 +214,10 @@ fn a_forced_load_ends_when_its_generation_failed() {
         return;
     };
     let context = worker_context(&root);
-    let generator = Arc::new(Plain { failed: Some((40, -40)), saved: Some((40, -41)) });
+    let generator = Arc::new(Plain {
+        failed: Some((40, -40)),
+        saved: Some((40, -41)),
+    });
     let mut streaming = Streaming::new(generator, context, 2);
     streaming.center = (0, 0);
     streaming.radius = 2;

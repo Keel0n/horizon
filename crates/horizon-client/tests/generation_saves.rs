@@ -776,7 +776,9 @@ fn an_aborted_streaming_does_not_hold_the_save() {
     };
     let context = worker_context(&root);
     let decorating = Arc::new(AtomicBool::new(false));
-    let generator = Arc::new(Slow { decorating: decorating.clone() });
+    let generator = Arc::new(Slow {
+        decorating: decorating.clone(),
+    });
     let mut streaming = Streaming::new(generator, context, 2);
     streaming.center = (0, 0);
     streaming.radius = 2;
@@ -827,12 +829,17 @@ fn a_crash_stop_does_not_wait_for_a_lost_save_job() {
     };
     let started = Arc::new(AtomicBool::new(false));
     let mut streaming = Streaming::new(
-        Arc::new(Saving { started: started.clone() }),
+        Arc::new(Saving {
+            started: started.clone(),
+        }),
         worker_context(&root),
         2,
     );
     let mut world = World::new(BlockStateId(0), 0);
-    streaming.submit_protos(vec![ProtoSave { pos: (0, 0), proto: Box::new(()) }]);
+    streaming.submit_protos(vec![ProtoSave {
+        pos: (0, 0),
+        proto: Box::new(()),
+    }]);
     let deadline = Instant::now() + Duration::from_secs(30);
     while !started.load(Ordering::SeqCst) {
         assert!(Instant::now() < deadline, "the save job never started");
