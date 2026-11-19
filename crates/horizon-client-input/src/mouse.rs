@@ -139,6 +139,11 @@ pub struct LookOptions {
     pub scoping: bool,
     pub invert_x: bool,
     pub invert_y: bool,
+    /// Horizon's option: a scoped look keeps its sideways screen speed near the poles
+    /// ([`spyglass_polar_yaw_scale`]). Off is vanilla's turn, bit for bit.
+    pub spyglass_polar_look: bool,
+    /// The pitch (`Entity.xRot`, degrees) the turn starts from: the scale above is read at it.
+    pub pitch: f32,
 }
 
 /// The input state of `MouseHandler` that drives the camera and the hotbar.
@@ -250,10 +255,11 @@ impl MouseLook {
         } else if look.scoping {
             self.smooth_turn_x.reset();
             self.smooth_turn_y.reset();
-            (
-                self.accumulated_dx * sensitivity_mod,
-                self.accumulated_dy * sensitivity_mod,
-            )
+            let mut xo = self.accumulated_dx * sensitivity_mod;
+            if look.spyglass_polar_look {
+                xo *= spyglass_polar_yaw_scale(look.pitch);
+            }
+            (xo, self.accumulated_dy * sensitivity_mod)
         } else {
             self.smooth_turn_x.reset();
             self.smooth_turn_y.reset();
@@ -285,6 +291,23 @@ impl MouseLook {
     }
 }
 
+/// The most the polar spyglass look multiplies a scoped yaw by: `1/cos(pitch)` stops
+/// growing here (82.82°), so the factor stays finite and the roll it adds stays bounded.
+pub const SPYGLASS_POLAR_LOOK_MAX: f64 = 8.0;
+
+/// The yaw scale of a scoped first-person look at `pitch` degrees with the polar spyglass
+/// look on: `1/cos(pitch)`, held at [`SPYGLASS_POLAR_LOOK_MAX`]. A yaw turn moves the
+/// picture sideways by `d·cos(pitch)` and rolls it by `d·sin(pitch)`, so the scale keeps the
+/// sideways motion where it is at the horizon while the roll grows with it. 1 for a pitch
+/// that isn't a number.
+pub fn spyglass_polar_yaw_scale(pitch: f32) -> f64 {
+    if !pitch.is_finite() {
+        return 1.0;
+    }
+    let cos = f64::from(pitch).to_radians().cos().abs();
+    (1.0 / cos).min(SPYGLASS_POLAR_LOOK_MAX)
+}
+
 /// `MouseHandler.turnPlayer`'s scales: `sensitivityMod = (s*0.6F+0.2F)^3`
 /// and `sens = sensitivityMod * 8`.
 fn sensitivity_scales(sensitivity: f64) -> (f64, f64) {
@@ -295,7 +318,9 @@ fn sensitivity_scales(sensitivity: f64) -> (f64, f64) {
 
 /// Degrees `Entity.turn` turns per unit of mouse motion: 0.15 x `sens`
 /// (`sensitivityMod` while scoping). With the cinematic camera the same total
-/// is reached, spread over the following frames.
+/// is reached, spread over the following frames. With Horizon's polar spyglass
+/// look on, a scoped yaw is multiplied by [`spyglass_polar_yaw_scale`] on top,
+/// and this is vanilla's (off) speed; the pitch turns the same either way.
 pub fn degrees_per_count(look: LookOptions) -> f64 {
     let (sensitivity_mod, sens) = sensitivity_scales(look.sensitivity);
     let scale = if look.scoping && !look.smooth_camera {
@@ -374,6 +399,8 @@ mod tests {
         scoping: false,
         invert_x: false,
         invert_y: false,
+        spyglass_polar_look: false,
+        pitch: 0.0,
     };
 
     /// One frame of motion `(dx, dy)` through `onMove`'s grabbed path,
@@ -436,6 +463,104 @@ mod tests {
             ..PLAIN
         };
         assert!((degrees_per_count(PLAIN) / degrees_per_count(scoped) - 8.0).abs() < 1e-12);
+    }
+
+    /// Horizon's polar spyglass look off: a scoped turn is `MouseHandler.turnPlayer`'s
+    /// `accumulated * sensitivityMod` and `Entity.turn`'s 0.15 degrees a unit, bit for bit,
+    /// at every pitch.
+    #[test]
+    fn spyglass_polar_look_off_is_vanilla_bit_for_bit() {
+        let sensitivity = 0.5f64;
+        let ss = sensitivity * f64::from(0.6f32) + f64::from(0.2f32);
+        let sensitivity_mod = ss * ss * ss;
+        for pitch in [0.0f32, 45.0, 60.0, 80.0, 82.82, 89.0, 89.9, 90.0] {
+            for (dx, dy) in [(100.0, 0.0), (0.0, 100.0), (37.0, -12.5)] {
+                let o = LookOptions {
+                    scoping: true,
+                    spyglass_polar_look: false,
+                    pitch,
+                    ..PLAIN
+                };
+                let mut look = MouseLook::default();
+                let mut rot = rotation();
+                frame(&mut look, &mut rot, 1.0, (dx, dy), o);
+                let yaw = ((dx * sensitivity_mod) as f32) * 0.15;
+                let pitch_deg = (((dy * sensitivity_mod) as f32) * 0.15).clamp(-90.0, 90.0);
+                assert_eq!(
+                    (rot.y_rot, rot.x_rot),
+                    (yaw, pitch_deg),
+                    "pitch {pitch} d {dx},{dy}"
+                );
+            }
+        }
+    }
+
+    /// On, a scoped yaw is `1/cos(pitch)` faster, held at the cap from 82.82 degrees, and
+    /// the pitch keeps vanilla's rate.
+    #[test]
+    fn spyglass_polar_look_scales_the_yaw_by_one_over_cos() {
+        let sensitivity = 0.5f64;
+        let ss = sensitivity * f64::from(0.6f32) + f64::from(0.2f32);
+        let sensitivity_mod = ss * ss * ss;
+        let dx = 100.0;
+        let yaw = |pitch: f32| {
+            let o = LookOptions {
+                scoping: true,
+                spyglass_polar_look: true,
+                pitch,
+                ..PLAIN
+            };
+            let mut look = MouseLook::default();
+            let mut rot = rotation();
+            frame(&mut look, &mut rot, 1.0, (dx, 0.0), o);
+            assert_eq!(rot.x_rot, 0.0, "pitch {pitch}: yaw alone keeps the pitch");
+            rot.y_rot
+        };
+        for pitch in [0.0f32, 45.0, 60.0, 80.0] {
+            let want = 1.0 / f64::from(pitch).to_radians().cos();
+            let factor = spyglass_polar_yaw_scale(pitch);
+            assert!((factor - want).abs() < 1e-9, "pitch {pitch}: {factor}");
+            assert_eq!(
+                yaw(pitch),
+                ((dx * sensitivity_mod * factor) as f32) * 0.15,
+                "pitch {pitch}, factor {factor}"
+            );
+        }
+        for pitch in [82.82f32, 89.0, 89.9, 90.0, -90.0] {
+            let factor = spyglass_polar_yaw_scale(pitch);
+            assert_eq!(factor, SPYGLASS_POLAR_LOOK_MAX, "pitch {pitch}");
+            assert_eq!(
+                yaw(pitch),
+                ((dx * sensitivity_mod * factor) as f32) * 0.15,
+                "pitch {pitch}"
+            );
+        }
+    }
+
+    /// The scale is finite everywhere: a pitch that isn't a number leaves the look alone,
+    /// and the poles give the cap rather than an infinity the turn would turn into a NaN.
+    #[test]
+    fn spyglass_polar_look_holds_the_pole_without_nan() {
+        assert_eq!(spyglass_polar_yaw_scale(f32::NAN), 1.0);
+        assert_eq!(spyglass_polar_yaw_scale(f32::INFINITY), 1.0);
+        assert_eq!(spyglass_polar_yaw_scale(f32::NEG_INFINITY), 1.0);
+        for pitch in [90.0f32, -90.0, 89.999, -89.999] {
+            let factor = spyglass_polar_yaw_scale(pitch);
+            assert_eq!(factor, SPYGLASS_POLAR_LOOK_MAX, "pitch {pitch}");
+            assert!(factor.is_finite() && factor > 0.0);
+        }
+        // A frame looking straight up turns, and stays a rotation.
+        let o = LookOptions {
+            scoping: true,
+            spyglass_polar_look: true,
+            pitch: 90.0,
+            ..PLAIN
+        };
+        let mut look = MouseLook::default();
+        let mut rot = rotation();
+        frame(&mut look, &mut rot, 1.0, (100.0, -100.0), o);
+        assert!(rot.x_rot.is_finite() && rot.y_rot.is_finite(), "{rot:?}");
+        assert!((-90.0..=90.0).contains(&rot.x_rot), "{rot:?}");
     }
 
     #[test]
@@ -507,6 +632,8 @@ mod tests {
                     scoping: false,
                     invert_x: false,
                     invert_y: false,
+                    spyglass_polar_look: false,
+                    pitch: 0.0,
                 },
             )
             .unwrap();
