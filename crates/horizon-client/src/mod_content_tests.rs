@@ -1182,11 +1182,13 @@ fn ruby_mod_with_pistons(dir: &Path, pistons: bool) -> ContentMod {
             r#"{"type": "minecraft:crafting_shapeless", "category": "misc",
                 "ingredients": ["ruby:ruby_stew"], "result": {"id": "ruby:ruby"}}"#,
         ),
-        // Carried-over tags name blocks left out and other mods' ids too.
+        // Carried-over tags name blocks left out and other mods' ids too, and
+        // 1.21.1's vanilla tags 26.3 renamed (`concrete_powders`).
         (
             "data/minecraft/tags/block/mineable/pickaxe.json",
             r##"{"values": ["ruby:ruby_block", "ruby:left_out", "othermod:thing",
-                {"id": "othermod:optional", "required": false}, "#c:storage_blocks/ruby"]}"##,
+                {"id": "othermod:optional", "required": false}, "#c:storage_blocks/ruby",
+                "#minecraft:concrete_powder"]}"##,
         ),
         (
             "data/c/tags/item/gems/ruby.json",
@@ -1542,8 +1544,7 @@ fn content_root_loads_with_every_table() {
             }
             for _ in 0..4 {
                 level.time += 1;
-                independent_behaviours.tick_scheduled(&mut level, &mut ticks);
-                independent_behaviours.run_block_events(&mut level, &mut ticks);
+                independent_behaviours.tick_level_blocks(&mut level, &mut ticks);
                 independent_behaviours.tick_block_entities(&mut level, &mut ticks);
             }
             assert_eq!(

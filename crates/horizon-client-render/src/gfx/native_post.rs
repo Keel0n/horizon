@@ -373,6 +373,8 @@ pub struct NativeFrame {
     /// `frame.ray_distance` while the pack traces this frame's scene (`NativePack::write`),
     /// set before `write`: `frame.has_ray_tracing` is 1 then.
     pub(super) ray_distance: Option<f32>,
+    /// `frame.full_lightmap`, set before `write` from this frame's lightmap (`full_lightmap`).
+    pub(super) full_lightmap: [f32; 3],
     /// A pack with kept resources: their epochs (`NativePack::carry` moves them on).
     pub(super) epochs: Option<kept::Epochs>,
     start: std::time::Instant,
@@ -604,6 +606,7 @@ impl NativeFrame {
             last: None,
             eye: [f32::NAN; 4],
             ray_distance: None,
+            full_lightmap: [0.0; 3],
             epochs: None,
             start: std::time::Instant::now(),
             frames: 0,
@@ -846,6 +849,7 @@ impl NativeFrame {
         self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
         let mut inputs = frame_inputs(frame, size, seconds, index, self.shadow_camera.as_ref());
         inputs.wetness = self.wetness.0;
+        inputs.full_lightmap = self.full_lightmap;
         if let Some(distance) = self.ray_distance {
             (inputs.has_ray_tracing, inputs.ray_distance) = (1, distance);
         }
@@ -1368,10 +1372,13 @@ impl NativePost {
             }
             // The passes built against the scene read it too; the tonemap has no `trace`.
             entries.extend(kept::entries(&self.kept, pass, parity));
-            let with_scene = traced.and_then(|(t, scene)| Some((t.layout(pass?)?, t, scene)));
+            let with_scene = traced.and_then(|(t, scene)| {
+                let pass = pass?;
+                Some((t.layout(pass)?, t, scene, pass))
+            });
             let layout = match with_scene {
-                Some((layout, trace, scene)) => {
-                    entries.extend(trace.entries(scene));
+                Some((layout, trace, scene, pass)) => {
+                    entries.extend(trace.entries(pass, scene));
                     layout
                 }
                 None => kept::pass(&self.kept, pass).map_or(&self.layout, |p| &p.layout),
@@ -1401,10 +1408,9 @@ impl NativePost {
         self.traced = generation;
     }
 
-    /// Runs the passes over the world target `world` (colour, depth) of `size` and the tonemap
-    /// onto `screen`, timed by `timing` when it times this frame. With `scene`, the terrain's
-    /// scene and the camera (`trace` said this frame's `frame` has it), the passes built against
-    /// it draw.
+    /// The whole post stage in one call: `run_chain`, then `run_display` onto `screen`, of the
+    /// window's size.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn run(
         &mut self,
@@ -1417,17 +1423,40 @@ impl NativePost {
         scene: Option<&trace::Traced<'_>>,
     ) {
         let window = [screen.texture().width(), screen.texture().height()];
+        let timed = timing.as_deref_mut();
+        self.run_chain(device, encoder, world, size, window, timed, scene);
+        self.run_display(device, encoder, screen, timing);
+    }
+
+    /// Runs the passes over the world target `world` (colour, depth) of `size`, the last onto
+    /// the picture of the `window`'s size, timed by `timing` when it times this frame. With
+    /// `scene`, the terrain's scene and the camera (`trace` said this frame's `frame` has it),
+    /// the passes built against it draw. Without passes the world is decoded in `run_display`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn run_chain(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        world: (&wgpu::TextureView, &wgpu::TextureView, &wgpu::TextureView),
+        size: [u32; 2],
+        window: [u32; 2],
+        mut timing: Option<&mut super::pack_timing::PassTiming>,
+        scene: Option<&trace::Traced<'_>>,
+    ) {
         self.begin_kept(device, encoder, size);
         self.prepare(device, world, size, window, scene);
         if let Some(t) = timing.as_deref_mut() {
             t.mark(device, encoder, (world.0, self.format));
+        }
+        if self.passes.is_empty() {
+            return;
         }
         let Some((_, groups)) = &self.groups else {
             return;
         };
         let groups = kept::current(&self.kept, groups);
         let d = &self.display;
-        let (Some((_, scene)), Some((group, passes))) = (&d.scene, groups.split_last()) else {
+        let (Some((_, scene)), Some((_, passes))) = (&d.scene, groups.split_last()) else {
             return;
         };
         d.decoder.run(device, encoder, world.0, scene);
@@ -1464,6 +1493,28 @@ impl NativePost {
             });
             pass.set_bind_group(GROUP, group, &[]);
             pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// The tonemap onto `screen`, after `run_chain` in the same frame, which set this frame's
+    /// version of the kept resources. Without passes it decodes the world first.
+    pub(super) fn run_display(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        screen: &wgpu::TextureView,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
+        let Some(((world, _, _), groups)) = &self.groups else {
+            return;
+        };
+        let groups = kept::current(&self.kept, groups);
+        let d = &self.display;
+        let (Some((_, scene)), Some((group, _))) = (&d.scene, groups.split_last()) else {
+            return;
+        };
+        if self.passes.is_empty() {
+            d.decoder.run(device, encoder, world, scene);
         }
         let label = d.label.as_deref().unwrap_or("Tonemap");
         fullscreen_pass(encoder, label, screen, &d.tonemap, (GROUP, group), timing);
@@ -1615,7 +1666,19 @@ pub fn frame_inputs(
         fog_render: [fog[2], fog[3]],
         moon_phase: frame.sky.moon_phase,
         padding: [0; 1],
+        // `NativeFrame::write` sets it from the renderer's lightmap.
+        full_lightmap: [0.0; 3],
+        full_lightmap_padding: [0; 1],
     }
+}
+
+/// `frame.full_lightmap` from `lightmap`, the renderer's lightmap as it uploads it
+/// (`Renderer::lightmap_pixels`: RGBA rows of sky level by block level, in vanilla's gamma):
+/// its texel at block and sky light 15, which terrain.wgsl's `sample_lightmap(15.0, 15.0)` reads,
+/// decoded as the stages' `lightmap` is.
+pub(super) fn full_lightmap(lightmap: &[u8; 16 * 16 * 4]) -> [f32; 3] {
+    let at = (15 * 16 + 15) * 4;
+    decoded([0, 1, 2].map(|i| f32::from(lightmap[at + i]) / 255.0))
 }
 
 /// The pack's `[[textures]]` (`check::Image`s), uploaded with samplers as the manifest says.

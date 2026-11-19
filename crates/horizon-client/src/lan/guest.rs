@@ -194,6 +194,9 @@ pub struct Guest {
     /// A disconnect was started ([`Guest::begin_disconnect`]); the connection closes when the
     /// server next polls it, and until then no other disconnect is sent.
     pub disconnect_pending: bool,
+    /// A mod's personal sidebar is on this client (`Game::native_sidebar`); it is gone with the
+    /// connection.
+    pub personal_sidebar: bool,
     pub uuid: u128,
     pub name: String,
     /// The profile's properties, for the player list (skins).
@@ -713,6 +716,7 @@ impl Guest {
             left_reason: String::new(),
             pending_move: None,
             disconnect_pending: false,
+            personal_sidebar: false,
             uuid: j.uuid,
             name: j.name,
             properties: j.properties,
@@ -1048,6 +1052,18 @@ impl Guest {
     }
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
+    }
+    /// Whether handlePlayerPositionChange's moved-wrongly check applies (the
+    /// spectators and sleepers aside): not in creative, and not in the
+    /// server body's `LivingEntity.isInPostImpulseGraceTime` (the 40 ticks
+    /// after a wind charge's push, `ServerPlayer.onExplosionHit`, or a mace's
+    /// smash).
+    pub fn checks_wrong_moves(&self) -> bool {
+        !self.creative()
+            && !self
+                .motion
+                .as_ref()
+                .is_some_and(|m| m.impulse.is_in_grace_time())
     }
     /// Its client's `minecraft:brand` is Horizon's: it reads the protocol's
     /// extensions, such as a native mod's particle (`Particle::horizon_only`).
