@@ -2790,10 +2790,7 @@ impl Streaming {
                 // either: a column the save holds was loaded by the pump
                 // above, so the column stays unloaded, and forced, until its
                 // failure mark clears.
-                if self.generating.is_empty()
-                    && self.decorating == 0
-                    && self.finishing.is_empty()
-                    && self.viewing.is_empty()
+                if !self.chunks_in_flight()
                     && blocked_by_a_failed_generation(&self.failed, world, self.decorates, x, z)
                 {
                     log::warn!(
@@ -4716,18 +4713,18 @@ mod tests {
         assert!(!keys(&kept).contains(&(11, -3)));
     }
 
-    /// The barrier a forced chunk waits behind (`/forceload`, a mod's ticket)
-    /// ends when a generation it needs failed: a failure never becomes a
-    /// column, and the barrier runs no sweep, the only place a mark is
-    /// dropped, so waiting again for the same chunk would never end.
+    /// A failed generation blocks the forced load of the columns that need it:
+    /// its own column, or one whose decoration needs it (two chunks out when a
+    /// generator decorates). Only the sweep clears a mark, and the barrier runs
+    /// no sweep, so waiting again for the same chunk would never end.
     #[test]
-    fn a_forced_load_gives_up_when_the_generation_it_needs_failed() {
+    fn a_failed_generation_blocks_the_forced_load_of_its_neighbours() {
         let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
         let blocked = |keys: &[(i32, i32)], world: &World, decorates: bool, x: i32, z: i32| {
             let failed: FxHashSet<(i32, i32)> = keys.iter().copied().collect();
             blocked_by_a_failed_generation(&failed, world, decorates, x, z)
         };
-        // Nothing failed: the barrier waits.
+        // Nothing failed: nothing blocks.
         assert!(!blocked(&[], &world, false, 0, 0));
         assert!(!blocked(&[], &world, true, 0, 0));
         for decorates in [false, true] {
