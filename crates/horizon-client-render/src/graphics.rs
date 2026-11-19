@@ -1333,8 +1333,7 @@ impl Graphics {
     }
     /// Worker threads for chunk generation and meshing: the player's own count, or
     /// the automatic one, which Battery Mode halves (`horizon_threads::sizing`). The
-    /// pools take their size when they start, so a setting changed in a session
-    /// applies from the next launch.
+    /// pools take their size when they start.
     pub fn worker_threads(&self) -> usize {
         if self.workers > 0 {
             return self.workers as usize;
