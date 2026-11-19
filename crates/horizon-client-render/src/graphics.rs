@@ -938,8 +938,11 @@ pub struct Graphics {
     /// Empty for a marker that named no driver: the first one seen holds it.
     pub hdr_failed_start: Option<String>,
     /// Battery mode: at most 60 frames per second in a world and 30 in menus
-    /// or behind other windows, and half the worker threads. Off by default;
-    /// it changes when frames are drawn, never what they show or the ticks.
+    /// or behind other windows, and half the automatic size of every worker pool
+    /// the client starts (chunk building, the tick's helpers, saves, network and
+    /// chunk encoding), which the pools take at the next start. Off by default;
+    /// it changes when frames are drawn and how many threads run, never what they
+    /// show or the ticks.
     pub battery: bool,
     /// Reuse the shader pack's last shadow map when sun, view, scene revision and
     /// pack uniforms still match. Off by default: vanilla loaders redraw every frame
