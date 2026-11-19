@@ -679,3 +679,62 @@ fn the_end_asks_for_no_creature_packs_and_the_overworld_does() {
         );
     }
 }
+
+/// Streaming asks the wrapper, so a saved world keeps the inner generator's
+/// failed-generation rule: without it a failed proto chunk is decorated,
+/// finished and saved as an empty column, the bug of #18403.
+#[test]
+fn a_saved_world_keeps_the_failed_generation_rule() {
+    use horizon_client::save::{Persistent, SaveDir};
+    /// A proto chunk that knows whether its generation failed.
+    struct Marker {
+        failed: bool,
+    }
+    struct Failing;
+    impl ChunkGenerator for Failing {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), x: i32, _: i32) -> Proto {
+            Box::new(Marker { failed: x == 0 })
+        }
+        fn finish(&self, _: Proto) -> Chunk {
+            Chunk::empty(0, 0)
+        }
+        fn generated(&self, proto: &Proto) -> bool {
+            !proto.downcast_ref::<Marker>().unwrap().failed
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let biomes = Arc::new(
+        Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+            root.to_path_buf(),
+        ))
+        .unwrap(),
+    );
+    let dir = std::env::temp_dir().join(format!("horizon-failed-rule-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let persistent = Persistent {
+        inner: Arc::new(Failing),
+        save: Arc::new(SaveDir::new(
+            dir.clone(),
+            horizon_client::save::LevelShape::OVERWORLD,
+        )),
+        registry: assets,
+        biomes,
+    };
+    let failed: Proto = Box::new(Marker { failed: true });
+    let good: Proto = Box::new(Marker { failed: false });
+    assert!(
+        !ChunkGenerator::generated(&persistent, &failed),
+        "the save wraps a failed generation as a generated column"
+    );
+    assert!(
+        ChunkGenerator::generated(&persistent, &good),
+        "the save stops passing on the inner generator's rule"
+    );
+    drop(persistent);
+    let _ = std::fs::remove_dir_all(&dir);
+}
