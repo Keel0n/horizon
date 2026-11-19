@@ -2318,7 +2318,6 @@ impl Streaming {
         // until the estimate warms up `fits` prices nothing, and this is the room
         // check it was (#18239).
         let estimate = job_stats::mesh_cost_ns();
-        let mut admitted = 0;
         for (_, x, z, sections) in candidates.drain(..) {
             let cost = estimate.map_or(0, |cost| cost.saturating_mul(sections.len() as u64));
             let left = estimate.map(|cost| {
@@ -2326,7 +2325,7 @@ impl Streaming {
                     .saturating_mul(MESH_SLICE_NANOS)
                     .saturating_sub((self.meshing.len() as u64).saturating_mul(cost))
             });
-            if !fits(left, cost, admitted == 0 && self.meshing.is_empty()) {
+            if !fits(left, cost, self.meshing.is_empty()) {
                 continue;
             }
             let Some(region) = Self::region(world, x, z) else {
@@ -2350,7 +2349,6 @@ impl Streaming {
                     ),
                 );
             }
-            admitted += 1;
         }
         self.cover_current = false;
         self.light_scratch = light;
