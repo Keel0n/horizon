@@ -31,9 +31,9 @@ const OS_ENERGY_SAVER: &str = "horizon.graphics.os_energy_saver";
 /// that one does slow the game, and the page says so in the warning colour above its description.
 const OS_THERMAL_LIMIT: &str = "horizon.graphics.os_thermal_limit";
 
-/// What the OS is doing to this machine right now, as the key of the warning the Performance page
-/// shows, or `None` while it isn't limiting anything (`horizon_system::power`). The thermal limit
-/// wins when both are on: it is the one that costs frames.
+/// What the OS reports about this machine right now, as the key of the warning the Performance page
+/// shows, or `None` while it reports nothing (`horizon_system::power`). The thermal limit wins when
+/// both are on: it is the one that costs frames.
 fn os_limit() -> Option<&'static str> {
     let sample = horizon_system::power::sample();
     if !sample.limited() {
@@ -1536,9 +1536,9 @@ impl Screen for GraphicsScreen {
             g::translucent_batching_offered(),
             g::gpu_culling_offer(),
             g::reduced_far_detail_suggested(),
-            // The machine's own state, never the OS itself: the Performance page's warning
-            // follows it while that page is open.
-            os_limit().is_some(),
+            // What the OS reports, not whether it reports something: a reason that changes without a
+            // moment of nothing (the saver, then the CPU's heat) has to rebuild the sheets too.
+            os_limit(),
         );
         shell::stamp_of(&(read(s), s.fullbright_held, &s.running_pack, offers))
     }

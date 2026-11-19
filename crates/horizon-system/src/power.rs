@@ -102,8 +102,8 @@ impl Sample {
         transitions: 0,
     };
 
-    /// Whether the OS is holding the game back right now: energy saver on, or the CPU limited
-    /// below full speed. What the graphics page warns about.
+    /// Whether the OS reports a limit of its own: its energy saver is on, or it holds the CPU
+    /// below full speed. What the graphics page tells the player about.
     pub fn limited(self) -> bool {
         self.saver || self.thermal.limited()
     }
@@ -117,8 +117,9 @@ impl Default for Sample {
 
 /// The published snapshot: [`sample`] takes it whole and without asking the OS, and the sampler
 /// replaces it once a tick. One lock for all of it, so a reader can't pair a new count with an old
-/// set of fields and lose a change nobody will ever print. Both readers are off the frame loop, so
-/// the lock costs nothing that matters.
+/// set of fields and lose a change nobody will ever print. The lock is never held for longer than
+/// a copy of twelve bytes: the sampler takes it once a tick, the window's tick once, and the
+/// settings screen once a frame, and only while it is open. Nobody here waits for the OS.
 static SNAPSHOT: Mutex<Sample> = Mutex::new(Sample::UNKNOWN);
 
 /// The channel's state before [`start`], or where its thread couldn't be made: nothing known,

@@ -11,7 +11,8 @@ static POWER_SAID: AtomicU32 = AtomicU32::new(0);
 impl Game<'_> {
     pub(super) fn tick_client_lead(&mut self) -> Result<()> {
         // The machine's power state, on the window's own tick and never in the frame loop: the
-        // sampler read the OS on its thread, so this is two atomic loads (`horizon_system::power`).
+        // sampler read the OS on its thread, so this is one lock of its snapshot and a copy of it
+        // (`horizon_system::power`).
         say_power_change();
         self.tick_debug_keys()?;
         self.tick_debug_charts();
