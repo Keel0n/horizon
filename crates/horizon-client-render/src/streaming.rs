@@ -2303,18 +2303,27 @@ impl Streaming {
         // priced from what mesh jobs have cost lately (`job_stats`): a worker
         // still inside one heavy column is not handed the next, so the tick's
         // seven jobs don't all run past it, holding a 3x3 snapshot made stale
-        // for whoever reaches it last. Columns past the slice stay in
+        // for whoever reaches it last. `complete_commit` sits in the frame loop,
+        // not on the 20 Hz tick, so what the slice bounds is the work in flight —
+        // `left` is recomputed from `meshing`, which counts the jobs queued with
+        // the jobs running — and is no permission for one call: the same check
+        // binds at 20 and at 240 fps. Columns past the slice stay in
         // `dirty_sections` — `take_column` runs only for an admitted one — and
-        // the next tick's `complete_commit` asks for them again at the same
-        // rank. Until the estimate warms up `fits` prices nothing, and this is
-        // the room check it was (#18239).
+        // the next call asks for them again at the same rank. A pool with nothing
+        // in flight takes the first column however dear it is, or a column
+        // costlier than the whole slice would wait for room it can never have;
+        // until the estimate warms up `fits` prices nothing, and this is the room
+        // check it was (#18239).
         let estimate = job_stats::mesh_cost_ns();
-        let budget = estimate.map(|_| self.workers as u64 * bounded::MESH_SLICE_SHARE_NANOS);
-        let mut spent = estimate.map_or(0, |cost| self.meshing.len() as u64 * cost);
         let mut admitted = 0;
         for (_, x, z, sections) in candidates.drain(..) {
             let cost = estimate.map_or(0, |cost| cost.saturating_mul(sections.len() as u64));
-            if !bounded::fits(spent, cost, admitted, budget) {
+            let left = estimate.map(|cost| {
+                (self.workers as u64)
+                    .saturating_mul(bounded::MESH_SLICE_SHARE_NANOS)
+                    .saturating_sub((self.meshing.len() as u64).saturating_mul(cost))
+            });
+            if !bounded::fits(left, cost, admitted == 0 && self.meshing.is_empty()) {
                 continue;
             }
             let Some(region) = Self::region(world, x, z) else {
@@ -2338,7 +2347,6 @@ impl Streaming {
                     ),
                 );
             }
-            spent += cost;
             admitted += 1;
         }
         self.cover_current = false;

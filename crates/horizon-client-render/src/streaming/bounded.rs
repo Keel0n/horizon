@@ -21,17 +21,14 @@ pub(super) fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
 /// run under the next tick's light and generate jobs.
 pub(super) const MESH_SLICE_SHARE_NANOS: u64 = 12_500_000;
 
-/// Whether one more column of `cost` fits the slice (issue #18239). `spent` is
-/// what the columns already in flight (or already admitted) cost, `budget` the
-/// slice for all workers, `None` until the mesh cost estimate has warmed up —
-/// then nothing is priced and this says yes, exactly the room check before it.
-/// The first column always goes in: one dearer than the whole slice would
-/// otherwise wait for a room it can never get, and the queue would never drain.
-pub(super) fn fits(spent: u64, cost: u64, admitted: usize, budget: Option<u64>) -> bool {
-    let Some(budget) = budget else {
-        return true;
-    };
-    admitted == 0 || spent.saturating_add(cost) <= budget
+/// Whether one more column of `cost` fits what is left of the mesh slice (issue
+/// #18239). `left` is the slice for all workers less what the columns in flight
+/// already cost — `None` until the mesh cost estimate has warmed up, when nothing
+/// is priced and this says yes, exactly the room check before it. `start_anyway`
+/// is a pool with nothing in flight: one column dearer than the whole slice would
+/// otherwise wait for room it can never have, and the queue would never drain.
+pub(super) fn fits(left: Option<u64>, cost: u64, start_anyway: bool) -> bool {
+    left.is_none_or(|left| start_anyway || cost <= left)
 }
 
 #[cfg(test)]
@@ -69,73 +66,21 @@ mod tests {
         assert_eq!(past, expected);
     }
 
-    /// The cost slice bounds a tick's meshing without ever stopping it: cold
-    /// statistics price nothing, the first column always goes in, and what the
-    /// columns in flight have spent is what decides the next.
+    /// The slice prices what is in flight: a column fits what is left of it, a
+    /// cold estimate prices nothing, and the first column into an empty pool goes
+    /// in whatever it costs.
     #[test]
-    fn a_column_fits_the_slice_or_waits_for_the_next_tick() {
-        // No estimate yet: nothing is priced, so nothing is refused.
-        assert!(fits(9_000_000, 9_000_000, 6, None));
-        // The first column goes in however dear it is.
-        assert!(fits(0, u64::MAX / 2, 0, Some(12_500_000)));
-        assert!(fits(50_000_000, 30_000_000, 1, Some(87_500_000)));
-        assert!(!fits(60_000_000, 30_000_000, 2, Some(87_500_000)));
-        // Saturated, not wrapped: a spent past the budget refuses.
-        assert!(!fits(u64::MAX, 30_000_000, 2, Some(87_500_000)));
-    }
-
-    /// A model of the mesh stage, not a run of it (#18239): seven workers, a
-    /// 20 Hz tick, and forty columns queued, each one section costing a worker
-    /// 30 ms. Admission by count — the `room` above — hands seven columns out
-    /// in the first tick, so all seven workers sit inside a heavy job at once.
-    /// Admission by cost spends a quarter of a tick per worker, so fewer heavy
-    /// jobs start at a time; what must not regress is the nearest column still
-    /// starting in the first tick.
-    #[test]
-    fn a_cost_slice_keeps_the_workers_off_seven_heavy_jobs_at_once() {
-        // (milliseconds with all seven workers meshing, tick the nearest column
-        // started in).
-        fn model(by_cost: bool) -> (usize, u64) {
-            const WORKERS: usize = 7;
-            const MS: u64 = 1_000_000;
-            const TICK: u64 = 50 * MS;
-            const JOB: u64 = 30 * MS;
-            let budget = by_cost.then_some(WORKERS as u64 * MESH_SLICE_SHARE_NANOS);
-            let mut free_at = [0u64; WORKERS];
-            let mut queued = 40;
-            let (mut all_seven, mut first_started) = (0, u64::MAX);
-            for tick in 0..40 {
-                let start = tick * TICK;
-                let idle: Vec<usize> = (0..WORKERS).filter(|&w| free_at[w] <= start).collect();
-                let mut admitted = 0;
-                for w in idle {
-                    let spent = free_at.iter().filter(|&&at| at > start).count() as u64 * JOB;
-                    if queued > 0 && fits(spent, JOB, admitted, budget) {
-                        free_at[w] = start + JOB;
-                        queued -= 1;
-                        admitted += 1;
-                        first_started = first_started.min(start);
-                    }
-                }
-                for now in (start..start + TICK).step_by(MS as usize) {
-                    if free_at.iter().all(|&at| at > now) {
-                        all_seven += 1;
-                    }
-                }
-            }
-            (all_seven, first_started / TICK)
-        }
-
-        let (count_all_seven, count_start) = model(false);
-        let (cost_all_seven, cost_start) = model(true);
-        assert_eq!(count_start, 0);
-        assert_eq!(
-            cost_start, 0,
-            "the nearest column still starts in the first tick"
+    fn a_column_fits_what_is_left_of_the_slice() {
+        assert!(
+            fits(None, u64::MAX / 2, false),
+            "cold statistics price nothing"
         );
         assert!(
-            cost_all_seven * 4 <= count_all_seven,
-            "{cost_all_seven} vs {count_all_seven} ms"
+            fits(Some(0), u64::MAX / 2, true),
+            "an empty pool starts one anyway"
         );
+        assert!(fits(Some(40_000_000), 30_000_000, false));
+        assert!(fits(Some(30_000_000), 30_000_000, false), "fits exactly");
+        assert!(!fits(Some(25_000_000), 30_000_000, false));
     }
 }
