@@ -632,10 +632,9 @@ impl Levels {
     /// The level not in place, in `dim`; a change through it cancels a queued close
     /// (`close_idle_levels`).
     pub(super) fn parked_mut(&mut self, dim: Dim) -> Option<&mut Parked> {
-        self.parked.get_mut(&dim).map(|level| {
-            level.not_closing();
-            level
-        })
+        let level = self.parked.get_mut(&dim)?;
+        level.not_closing();
+        Some(level)
     }
 
     /// A parked level by its exact dimension identity, without swapping it in.
