@@ -9,11 +9,11 @@ pub(super) const MESH_KIND: usize = 5;
 /// meshes) are many and short, so the two reads would cost more than they do.
 pub(super) const OTHER_KIND: usize = 6;
 /// Samples the mesh estimate needs before the admission check trusts it: the
-/// first seeds it and the second corrects the seed, so the check is quiet for one
-/// job rather than for the first tick. Four samples arrived only at the end of
-/// that tick, and the first tick is exactly the moment of entering the world the
-/// check is for. Until it has warmed up the check prices nothing: the behaviour
-/// before #18239.
+/// first seeds it and the second corrects the seed, so the check prices nothing
+/// for the first two jobs rather than for the first tick. Four samples arrived
+/// only at the end of that tick, and the first tick is exactly the moment of
+/// entering the world the check is for. Until it has warmed up the check prices
+/// nothing: the behaviour before #18239.
 const MESH_WARMUP: u64 = 2;
 /// The estimate's step: an eighth of the way to a sample, so twenty samples
 /// follow a step in cost to within a few percent.
