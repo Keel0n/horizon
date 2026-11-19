@@ -557,8 +557,8 @@ pub struct Streaming {
     /// The centre and radius the sweep was last reset for.
     scan_area: ((i32, i32), i32),
     generating: FxHashSet<(i32, i32)>,
-    /// Columns whose generation failed: not asked for again until they leave
-    /// the area (the sweep drops the mark) and are wanted again, so a
+    /// Columns whose generation failed: not asked for again while the area or
+    /// a forced chunk's ring asks for them (the sweep drops the mark), so a
     /// generator that keeps failing is not asked every frame.
     failed: FxHashSet<(i32, i32)>,
     generation_scan: GenerationScan,
@@ -780,8 +780,9 @@ struct GenerationInputs<'a> {
     ranges: Ranges<'a>,
     world: &'a World,
     generating: &'a FxHashSet<(i32, i32)>,
-    /// Columns whose generation failed: wanted, but not asked for again until
-    /// the sweep drops the mark (they left the area).
+    /// Columns whose generation failed: wanted, but not asked for again while
+    /// the area or a forced chunk's ring asks for them (the sweep drops the
+    /// mark).
     failed: &'a FxHashSet<(i32, i32)>,
     protos: &'a FxHashMap<(i32, i32), Option<Proto>>,
     finishing: &'a FxHashSet<(i32, i32)>,
@@ -879,8 +880,9 @@ impl GenerationScan {
                     for dx in -reach..=reach {
                         let (x, z) = (fx + dx, fz + dz);
                         // As in the sweep above: a failed generation is one
-                        // attempt until the sweep drops its mark (the column
-                        // stopped being requested), not one per scan.
+                        // attempt until the sweep drops its mark (neither the
+                        // area nor any forced chunk's ring asks for the
+                        // column), not one per scan.
                         if input.world.chunks.contains_key(&(x, z))
                             || input.generating.contains(&(x, z))
                             || input.failed.contains(&(x, z))
@@ -1892,10 +1894,10 @@ impl Streaming {
                     if !self.generated(&proto) {
                         // The generation failed (`VanillaTerrain::proto` logs
                         // it): the column is not generated, so the record goes
-                        // no further. It is not asked for again while the
-                        // player stays here (one warn per attempt, not one per
-                        // frame); the sweep drops the mark once the column
-                        // leaves the area and is asked for again.
+                        // no further. It is not asked for again while the area
+                        // or a forced chunk's ring asks for it (one warn per
+                        // attempt, not one per frame); once the sweep drops the
+                        // mark it is asked for again.
                         self.light_views.remove(&(x, z));
                         self.failed.insert((x, z));
                     } else if self.in_range(x, z, 4) || self.near_finished(x, z, 2) {
@@ -2019,15 +2021,23 @@ impl Streaming {
                     .retain_columns(|x, z| !far.contains(&(x, z)));
             }
             // A column whose generation failed is asked for again only once it
-            // is wanted again: the sweep drops the mark when the column leaves
-            // the area, so the next request is a retry and not a per-frame one.
+            // is wanted again: the sweep drops the mark when neither the area
+            // nor a forced chunk's generation ring asks for the column, so the
+            // next request is a retry and not a per-frame one.
             let wanted: FxHashSet<(i32, i32)> = {
                 let ranges = self.ranges();
                 let decorates = self.decorates;
+                let reach = if decorates {
+                    FORCED_TERRAIN_RING
+                } else {
+                    FORCED_FEATURES_RING
+                };
                 self.failed
                     .iter()
                     .copied()
-                    .filter(|&(x, z)| ranges.requested(x, z, decorates))
+                    .filter(|&(x, z)| {
+                        ranges.requested(x, z, decorates) || ranges.forced_within(x, z, reach)
+                    })
                     .collect()
             };
             self.failed = wanted;
@@ -4550,11 +4560,11 @@ mod tests {
         }
     }
 
-    /// A column whose generation failed is not asked for again while the
-    /// player stays, so a generator that keeps failing costs one attempt and
-    /// one log line, not one per frame; once the mark is dropped (the sweep
-    /// does it when the column leaves the area) the scan asks for the column
-    /// again, which is how it recovers when the generator does.
+    /// A column whose generation failed is not asked for again while the area
+    /// or a forced chunk's ring asks for it, so a generator that keeps failing
+    /// costs one attempt and one log line, not one per frame; once the sweep
+    /// drops the mark the scan asks for the column again, which is how it
+    /// recovers when the generator does.
     #[test]
     fn a_failed_column_is_not_asked_for_again_until_its_mark_is_dropped() {
         for decorates in [false, true] {
