@@ -8,7 +8,7 @@
 use std::sync::OnceLock;
 
 /// One of the long-lived pools the client starts at launch or when a world opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub enum Pool {
     /// Chunk generation, light and meshing (`crate::jobs`).
     Jobs,
@@ -118,7 +118,6 @@ mod tests {
         };
         assert_eq!(sum(false), 17);
         assert_eq!(sum(true), 10);
-        assert!(sum(true) < sum(false));
     }
 
     /// The first answer wins, so a pool started before the setting changed keeps
