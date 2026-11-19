@@ -871,7 +871,18 @@ impl MultifaceGrowthFeature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worldgen::block_feature::MultifaceClasses;
+    use crate::{
+        block_placement::BlockPlacementBindings,
+        block_properties::BlockPropertiesRegistry,
+        collision::CachedCollisionRegistry,
+        registry::BlockRegistry,
+        worldgen::{
+            block_feature::MultifaceClasses,
+            state_provider::{StateProviderBindings, StateProviderCatalog},
+        },
+    };
+    use horizon_core::nbt::Tag;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// Vanilla accepts a block by class (`MultifaceSpreadeableBlock`) and takes
     /// its spreader from the class too (`SculkVeinBlock`'s is the sculk one), so
@@ -912,5 +923,110 @@ mod tests {
             Ok(true)
         ));
         assert!(multiface_class(None, "example:glow_template").is_err());
+    }
+
+    /// Vanilla resolves a multiface block's name in the whole block registry
+    /// (`BuiltInRegistries.BLOCK`) and checks its class after that, so a mod's
+    /// own block decodes here too.
+    #[test]
+    fn multiface_growth_decodes_a_mod_block() {
+        let names = [
+            "minecraft:air",
+            "minecraft:cave_air",
+            "minecraft:void_air",
+            "minecraft:stone",
+            "example:glow_template",
+        ];
+        let mut states: Vec<Tag> = names
+            .iter()
+            .map(|name| Tag::String((*name).into()))
+            .collect();
+        // Placement binds all 2 * 3^4 moss-carpet transitions even when no moss
+        // carpet is placed. These are synthetic states, not prepared game data.
+        for bottom in ["false", "true"] {
+            for code in 0..81 {
+                let mut n = code;
+                let mut props = BTreeMap::from([("bottom".into(), Tag::String(bottom.into()))]);
+                for side in ["north", "east", "south", "west"] {
+                    props.insert(side.into(), Tag::String(["none", "low", "tall"][n % 3].into()));
+                    n /= 3;
+                }
+                states.push(Tag::compound([
+                    ("id", Tag::String("minecraft:pale_moss_carpet".into())),
+                    ("properties", Tag::Compound(props)),
+                ]));
+            }
+        }
+        let mut defaults: BTreeMap<_, _> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ((*name).into(), Tag::Int(index as i32)))
+            .collect();
+        defaults.insert("minecraft:pale_moss_carpet".into(), Tag::Int(names.len() as i32));
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            ("states", Tag::List(states.clone())),
+            ("defaults", Tag::Compound(defaults)),
+        ]))
+        .unwrap();
+        let empty = Tag::compound([
+            ("x", Tag::LongArray(vec![0])),
+            ("y", Tag::LongArray(vec![0])),
+            ("z", Tag::LongArray(vec![0])),
+            ("occupied", Tag::ByteArray(vec![])),
+            ("cube", Tag::Byte(0)),
+            ("cube_axes", Tag::Byte(0)),
+            ("discrete_min", Tag::IntArray(vec![0; 3])),
+            ("discrete_max", Tag::IntArray(vec![0; 3])),
+        ]);
+        let collision_tag = Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            ("states", Tag::List(states.clone())),
+            ("shapes", Tag::List(vec![empty])),
+            ("cached_shapes", Tag::IntArray(vec![0; states.len()])),
+        ]);
+        let collisions = CachedCollisionRegistry::from_nbt(&collision_tag, &registry).unwrap();
+        let blocks = names
+            .iter()
+            .copied()
+            .chain(["minecraft:pale_moss_carpet"])
+            .map(|name| (name.into(), Tag::Byte(0)))
+            .collect();
+        let properties = BlockPropertiesRegistry::from_nbt(
+            &Tag::compound([
+                ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+                ("states", Tag::List(states)),
+                ("blocks", Tag::Compound(blocks)),
+                ("occlusion", collision_tag),
+            ]),
+            &collisions,
+        )
+        .unwrap();
+        let providers =
+            StateProviderBindings::new(&registry, BTreeSet::new(), &BTreeMap::new()).unwrap();
+        let catalog = StateProviderCatalog::from_resources(&BTreeMap::new()).unwrap();
+        let placement =
+            BlockPlacementBindings::new(&registry, &properties, &BTreeSet::new(), &BTreeSet::new())
+                .unwrap();
+        let bindings = FeatureBlockBindings::new(&registry, BTreeSet::new())
+            .unwrap()
+            .with_block_properties(&properties)
+            .unwrap()
+            .with_state_providers(providers, catalog, placement)
+            .unwrap()
+            .with_multiface_classes(MultifaceClasses::from_names(
+                &["minecraft:glow_lichen", "example:glow_template"],
+                &[],
+            ));
+        let json = r#"{"type":"minecraft:multiface_growth","block":"example:glow_template","can_place_on_floor":true,"can_be_placed_on":"minecraft:stone"}"#;
+        let feature = MultifaceGrowthFeature::decode(json, &bindings).unwrap();
+        assert_eq!(Some(feature.block), registry.default_state("example:glow_template"));
+        // `minecraft:glow_lichen` carries the class but is not registered here,
+        // so only the name lookup can fail: it runs before the class does.
+        let unregistered = r#"{"type":"minecraft:multiface_growth","block":"minecraft:glow_lichen","can_place_on_floor":true,"can_be_placed_on":"minecraft:stone"}"#;
+        assert!(matches!(
+            MultifaceGrowthFeature::decode(unregistered, &bindings),
+            Err(DecodeError::Field("multiface block"))
+        ));
     }
 }
