@@ -1328,7 +1328,10 @@ impl Graphics {
     pub fn black_level_nits(&self) -> f32 {
         self.hdr_black_level as f32 / 100.0
     }
-    /// Worker threads for chunk generation and meshing.
+    /// Worker threads for chunk generation and meshing: the player's own count, or
+    /// the automatic one, which Battery Mode halves (`horizon_threads::sizing`). The
+    /// pools take their size when they start, so a setting changed in a session
+    /// applies from the next launch.
     pub fn worker_threads(&self) -> usize {
         if self.workers > 0 {
             return self.workers as usize;
@@ -1343,8 +1346,7 @@ impl Graphics {
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer. On Apple
         // silicon only the performance cores count (horizon_threads::default_workers).
-        let auto = horizon_threads::jobs::default_threads();
-        if self.battery { auto.div_ceil(2) } else { auto }
+        horizon_threads::sizing::for_pool_with(self.battery, horizon_threads::sizing::Pool::Jobs)
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a
     /// world or while another window has focus.
