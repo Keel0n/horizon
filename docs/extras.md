@@ -41,6 +41,23 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 
 ## The extras
 
+### Spyglass look at the poles (`spyglassPolarLook`, default off)
+- Looking up or down with a spyglass, the two axes of the look no longer cross the
+  screen at the same rate: a yaw turn of `d` degrees moves the picture sideways by
+  `d·cos(pitch)` and rolls it around the centre by `d·sin(pitch)`, so near the poles
+  the picture barely moves sideways while the roll grows. Vanilla turns both axes
+  at the same rate, so the horizontal look slows down as the pitch climbs.
+- On, a scoped first-person yaw is multiplied by `1/cos(pitch)`
+  (`mouse::spyglass_polar_yaw_scale`), which puts the sideways motion back where it
+  is at the horizon; the pitch keeps vanilla's rate (`degrees_per_count`).
+- The factor is held at 8×, so it stops growing at 82.8°: at the pole itself
+  `1/cos` would be an infinity, and the roll the turn adds grows with the factor, so
+  a bounded factor keeps that roll bounded too (still noticeably faster than at the
+  horizon). Client-only; no server sees it.
+- Off — the default — the turn is vanilla's, bit for bit. The maintainer decides
+  whether vanilla's slow horizontal look near the poles should ever stop being the
+  default.
+
 ### Chunk pregeneration (`pregen`, default off)
 - Makes `/pregen` available in single-player and hosted LAN worlds, with the existing cheat and
   permission checks. It does not start generation: run `/pregen start` explicitly.
