@@ -878,8 +878,12 @@ impl GenerationScan {
                 for dz in -reach..=reach {
                     for dx in -reach..=reach {
                         let (x, z) = (fx + dx, fz + dz);
+                        // As in the sweep above: a failed generation is one
+                        // attempt until the sweep drops its mark (the column
+                        // stopped being requested), not one per scan.
                         if input.world.chunks.contains_key(&(x, z))
                             || input.generating.contains(&(x, z))
+                            || input.failed.contains(&(x, z))
                             || input.protos.contains_key(&(x, z))
                             || input.finishing.contains(&(x, z))
                         {
@@ -4583,6 +4587,19 @@ mod tests {
             f.failed.clear();
             gate.invalidate();
             assert_eq!(asked(&mut gate, &f), [(0, 0)]);
+            // A forced column follows the same rule: a failed one is not asked
+            // for again scan after scan, and is back once its mark is dropped.
+            f.forced.insert((40, 40));
+            gate.invalidate();
+            assert!(asked(&mut gate, &f).contains(&(40, 40)));
+            f.failed.insert((40, 40));
+            gate.invalidate();
+            assert!(
+                !asked(&mut gate, &f).contains(&(40, 40)),
+                "asked every scan"
+            );
+            f.failed.clear();
+            f.forced.clear();
         }
     }
 

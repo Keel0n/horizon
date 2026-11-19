@@ -1114,7 +1114,10 @@ impl ChunkGenerator for VanillaTerrain {
     /// A chunk whose generation threw (`proto`): the streamer keeps the column
     /// ungenerated and asks for it again rather than writing an empty one.
     fn generated(&self, proto: &Proto) -> bool {
-        matches!(proto.downcast_ref::<VanillaProto>(), Some(VanillaProto::Ready(_)))
+        matches!(
+            proto.downcast_ref::<VanillaProto>(),
+            Some(VanillaProto::Ready(_))
+        )
     }
     fn proto_status(&self, proto: &Proto) -> Option<horizon_world::chunk_status::ChunkStatus> {
         let VanillaProto::Ready(chunk) = proto.downcast_ref::<VanillaProto>()? else {
