@@ -830,11 +830,14 @@ with a fixed startup command). With the setting off, a `HORIZON_PARALLEL_TICK` a
 environment still applies.
 
 `parallel_tick = "auto"` lets the server decide between ticks: the tick stays on one thread until it is heavy,
-then shares only the ticks that need it, and goes back to one thread when they are light again. `true` and `false`
-keep working as before (always shared, never shared), and `HORIZON_PARALLEL_TICK=auto` is the same for a host
-without a `server.toml` to edit. The log says which way it went, which is the proof it works: `Horizon: the tick
-takes 31.4 ms, sharing it among threads` when it starts sharing, `Horizon: the tick takes 8.2 ms, back on one
-thread` when it stops. The thresholds Auto watches and when it tries again: [graphics.md](graphics.md).
+then shares only the ticks that need it, and goes back to one thread when they are light again. `true` keeps
+sharing every tick and `false` never shares, as before; with `false` a `HORIZON_PARALLEL_TICK` already in the
+server's environment still applies, as above, while `true` and `"auto"` set that variable for the game
+themselves. `HORIZON_PARALLEL_TICK=auto` is the same as the setting, for a host without a `server.toml` to
+edit. The log says which way it went, which is the proof it works: `Horizon: the tick takes 31.4 ms, sharing
+it among threads` when it starts sharing, `Horizon: the tick takes 8.2 ms, back on one thread` when it stops.
+A server whose ticks stay light never shares them, and the status says `watching`. The thresholds Auto watches
+and when it tries again: [graphics.md](graphics.md).
 
 Natural mob spawning is one of those phases: the spawn attempts of the chunks around your players run on the helper
 threads, and the server thread then takes what they found, in order, if the mob caps still allow it. It has vanilla's odds
