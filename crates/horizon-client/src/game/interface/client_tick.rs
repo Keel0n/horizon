@@ -35,12 +35,13 @@ impl Game<'_> {
 /// CPU's thermal limit, or the machine waking from sleep), and none for a tick that changed
 /// nothing: the line says what the machine did, without the game saying it again every tick.
 fn say_power_change() {
-    let counted = power::transitions();
+    // One snapshot for the whole line: the count and the fields it explains come from the same
+    // tick, so a change counted here can't be paired with the state before it.
+    let sample = power::sample();
     // `swap`, not `load` then `store`: two ticks can't both say the same change.
-    if POWER_SAID.swap(counted, Ordering::Relaxed) == counted {
+    if POWER_SAID.swap(sample.transitions, Ordering::Relaxed) == sample.transitions {
         return;
     }
-    let sample = power::sample();
     let thermal = match sample.thermal {
         Thermal::Unknown => "no thermal report".to_owned(),
         Thermal::Nominal => "not thermally limited".to_owned(),

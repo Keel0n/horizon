@@ -13,8 +13,7 @@
 //! doing, so the game can tell the player instead of leaving them to guess.
 
 use std::path::Path;
-use std::sync::Once;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
 /// How often the sampler reads the OS.
@@ -56,23 +55,6 @@ impl Source {
             Self::Unknown => "",
         }
     }
-
-    /// The snapshot's form.
-    fn code(self) -> u8 {
-        match self {
-            Self::Unknown => 0,
-            Self::Ac => 1,
-            Self::Battery => 2,
-        }
-    }
-
-    fn from_code(code: u8) -> Self {
-        match code {
-            1 => Self::Ac,
-            2 => Self::Battery,
-            _ => Self::Unknown,
-        }
-    }
 }
 
 /// What the OS says about the CPU's speed against its heat, where it says anything at all.
@@ -89,26 +71,14 @@ pub enum Thermal {
 }
 
 impl Thermal {
-    /// The snapshot's form: 0 unknown, 1 nominal, `percent + 2` below full speed.
-    fn code(self) -> u8 {
-        match self {
-            Self::Unknown => 0,
-            Self::Nominal => 1,
-            Self::Limited(percent) => percent.saturating_add(2),
-        }
-    }
-
-    fn from_code(code: u8) -> Self {
-        match code {
-            0 => Self::Unknown,
-            1 => Self::Nominal,
-            code => Self::Limited(code - 2),
-        }
+    /// `false` for anything but a reported limit: the only state the game tells a player about.
+    pub fn limited(self) -> bool {
+        matches!(self, Self::Limited(percent) if percent < 100)
     }
 }
 
 /// One reading of the channel, as [`sample`] gives it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sample {
     pub source: Source,
     /// The OS's energy saver is on (Windows' `SystemStatusFlag`). Always `false` where the OS has
@@ -117,41 +87,53 @@ pub struct Sample {
     pub thermal: Thermal,
     /// How often the machine slept since [`start`], as the sampler's clocks saw it.
     pub resumes: u32,
+    /// How many changes the channel has announced so far ([`transitions`]). It comes with the
+    /// fields above in one snapshot, so a reader can't pair a new count with an old state.
+    pub transitions: u32,
 }
 
 impl Sample {
+    /// Nothing known yet: what the channel holds before [`start`].
+    const UNKNOWN: Sample = Sample {
+        source: Source::Unknown,
+        saver: false,
+        thermal: Thermal::Unknown,
+        resumes: 0,
+        transitions: 0,
+    };
+
     /// Whether the OS is holding the game back right now: energy saver on, or the CPU limited
     /// below full speed. What the graphics page warns about.
     pub fn limited(self) -> bool {
-        self.saver || matches!(self.thermal, Thermal::Limited(_))
+        self.saver || self.thermal.limited()
     }
 }
 
-/// The published snapshot: [`sample`] reads it without a lock and without the OS.
-static SOURCE: AtomicU8 = AtomicU8::new(0);
-static SAVER: AtomicBool = AtomicBool::new(false);
-static THERMAL: AtomicU8 = AtomicU8::new(0);
-static RESUMES: AtomicU32 = AtomicU32::new(0);
-static TRANSITIONS: AtomicU32 = AtomicU32::new(0);
+impl Default for Sample {
+    fn default() -> Self {
+        Self::UNKNOWN
+    }
+}
+
+/// The published snapshot: [`sample`] takes it whole and without asking the OS, and the sampler
+/// replaces it once a tick. One lock for all of it, so a reader can't pair a new count with an old
+/// set of fields and lose a change nobody will ever print. Both readers are off the frame loop, so
+/// the lock costs nothing that matters.
+static SNAPSHOT: Mutex<Sample> = Mutex::new(Sample::UNKNOWN);
 
 /// The channel's state before [`start`], or where its thread couldn't be made: nothing known,
 /// which is what a reader already handles.
 pub fn sample() -> Sample {
-    Sample {
-        source: Source::from_code(SOURCE.load(Ordering::Relaxed)),
-        saver: SAVER.load(Ordering::Relaxed),
-        thermal: Thermal::from_code(THERMAL.load(Ordering::Relaxed)),
-        resumes: RESUMES.load(Ordering::Relaxed),
-    }
+    *SNAPSHOT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// How many changes the channel has announced since [`start`]: a new source, another energy-saver
-/// or thermal state, or a sleep. A reader that remembers the number it last acted on and compares
-/// it logs one line per change, never per tick, whatever cadence it runs at. A machine whose
-/// source the OS never names (a desktop, a platform without a probe) never moves, so it announces
-/// nothing.
+/// How many changes the channel has announced since [`start`]: another power source, another
+/// energy-saver or thermal state, or a sleep. A reader that remembers the number it last acted on
+/// and compares it logs one line per change, never per tick, whatever cadence it runs at.
 pub fn transitions() -> u32 {
-    TRANSITIONS.load(Ordering::Relaxed)
+    sample().transitions
 }
 
 /// Starts the sampler, at most once per process: one thread named `horizon-power`, reading the OS
@@ -183,11 +165,9 @@ fn run() {
         let slept = clock.slept_to(now);
         clock = now;
         let sample = channel.observe(read_os(&mut probe), slept);
-        SOURCE.store(sample.source.code(), Ordering::Relaxed);
-        SAVER.store(sample.saver, Ordering::Relaxed);
-        THERMAL.store(sample.thermal.code(), Ordering::Relaxed);
-        RESUMES.store(sample.resumes, Ordering::Relaxed);
-        TRANSITIONS.store(channel.transitions, Ordering::Relaxed);
+        *SNAPSHOT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sample;
         std::thread::sleep(TICK);
     }
 }
@@ -226,23 +206,28 @@ impl Channel {
             saver: reading.saver,
             thermal: reading.thermal,
             resumes: self.resumes,
+            transitions: self.transitions,
         }
     }
 }
 
-/// Whether a reader hears about this tick: the machine slept, or what the OS says about it
-/// changed while it named a source on both sides. The first reading is where the channel starts,
-/// not a change: a game that starts on the battery shouldn't announce it as one.
+/// Whether a reader hears about this tick: the machine slept, the OS's energy saver or its thermal
+/// limit changed, or what powers the machine changed between two sources the OS named. The last
+/// gate is the source's alone: a reading that failed and answered "unknown" in between is not a
+/// state, and the machine coming back to what it was is not a change. The first reading is where
+/// the channel starts, not a change: a game that starts on the battery doesn't announce it as one.
 fn announced(last: Option<Reading>, next: Reading, slept: bool) -> bool {
     if slept {
         return true;
     }
-    match last {
-        Some(last) => {
-            last != next && last.source != Source::Unknown && next.source != Source::Unknown
-        }
-        None => false,
-    }
+    let Some(last) = last else {
+        return false;
+    };
+    last.saver != next.saver
+        || last.thermal != next.thermal
+        || (last.source != next.source
+            && last.source != Source::Unknown
+            && next.source != Source::Unknown)
 }
 
 /// Both clocks of one tick. A suspend stops the monotonic clock on Linux and not everywhere, and
@@ -265,14 +250,15 @@ impl Clock {
     }
 
     /// Whether the machine slept between `self` and `after`: one of the clocks is [`SLEEP_GAP`]
-    /// or more ahead of the other reading of itself.
+    /// or more ahead of the other reading of itself. Only a clock that went forward counts: a
+    /// settable wall clock set back an hour is somebody's correction, not a suspend.
     fn slept_to(self, after: Self) -> bool {
         let monotonic = after
             .monotonic
             .saturating_duration_since(self.monotonic)
             .as_secs();
-        // A settable wall clock can jump backwards: the gap is a distance, not a difference.
-        monotonic.max(after.wall.abs_diff(self.wall)) >= SLEEP_GAP.as_secs()
+        let wall = after.wall.saturating_sub(self.wall).max(0) as u64;
+        monotonic.max(wall) >= SLEEP_GAP.as_secs()
     }
 }
 
@@ -474,6 +460,7 @@ fn windows_status() -> Option<(u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Readings of one machine, as the OS would give them tick after tick.
     fn reading(source: Source) -> Reading {
@@ -509,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_without_a_battery_announces_nothing() {
+    fn a_machine_without_a_battery_never_changes_source() {
         // A desktop, or a platform with no probe: the OS names no source, and repeating that
         // is not a change however often it repeats.
         let mut channel = Channel::default();
@@ -527,18 +514,22 @@ mod tests {
         }
         assert_eq!(channel.transitions, 0);
         // And for a desktop on Windows, whose `BatteryFlag` says it has no battery: no supply to
-        // name, so ticks of it are no change either, even with the mains online.
-        assert_eq!(
-            windows_reading_from(1, NO_BATTERY, 0).source,
-            Source::Unknown
+        // name, so a tick of it is no change either, even with the mains online.
+        channel.observe(
+            reading(windows_reading_from(1, NO_BATTERY, 0).source),
+            false,
         );
-        for _ in 0..3 {
-            channel.observe(
-                reading(windows_reading_from(1, NO_BATTERY, 0).source),
-                false,
-            );
-        }
         assert_eq!(channel.transitions, 0);
+        // The OS's own switch is a change even here: the source says nothing about the saver,
+        // and a desktop whose OS saves power is exactly what the page has to warn about.
+        channel.observe(
+            Reading {
+                saver: true,
+                ..Reading::default()
+            },
+            false,
+        );
+        assert_eq!(channel.transitions, 1);
     }
 
     #[test]
@@ -565,12 +556,13 @@ mod tests {
         assert!(!after.slept_to(even));
         channel.observe(reading(Source::Ac), after.slept_to(even));
         assert_eq!(channel.resumes, 1);
-        // A wall clock set back an hour is a jump too: the distance counts, not the difference.
+        // A wall clock set back an hour is a correction, not a suspend: only a clock that went
+        // forward can say the machine slept.
         let backwards = Clock {
             monotonic: even.monotonic + TICK,
             wall: even.wall - 3600,
         };
-        assert!(even.slept_to(backwards));
+        assert!(!even.slept_to(backwards));
     }
 
     #[test]
@@ -663,24 +655,28 @@ mod tests {
     }
 
     #[test]
-    fn the_graphics_pages_warning_fires_on_the_saver_or_a_limited_cpu() {
-        let saver = Sample {
-            saver: true,
-            ..Sample::default()
-        };
-        assert!(saver.limited());
-        let hot = Sample {
-            thermal: Thermal::Limited(62),
-            ..Sample::default()
-        };
-        assert!(hot.limited());
+    fn the_graphics_pages_warning_is_about_a_limit_and_not_the_cable() {
         // A laptop on its battery with nothing else going on is not the OS holding it back.
         let on_battery = Sample {
             source: Source::Battery,
             ..Sample::default()
         };
         assert!(!on_battery.limited());
-        assert!(!Sample::default().limited());
+        // The two things that are: the OS's saver, and the CPU held below full speed.
+        assert!(
+            Sample {
+                saver: true,
+                ..Sample::default()
+            }
+            .limited()
+        );
+        assert!(
+            Sample {
+                thermal: Thermal::Limited(62),
+                ..Sample::default()
+            }
+            .limited()
+        );
     }
 
     /// A minimal `/sys/class/power_supply` in a folder of its own, removed when dropped.
