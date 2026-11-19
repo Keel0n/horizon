@@ -1481,7 +1481,9 @@ impl Streaming {
         world: &mut World,
     ) {
         self.generation_scan.exhausted = false;
-        self.decorating -= 1;
+        // A crash stop clears the counter while a decoration is still out
+        // (`abort_generation`): its late result must not take it below zero.
+        self.decorating = self.decorating.saturating_sub(1);
         for i in &finals {
             self.decorating_finals
                 .remove(&(x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1));
@@ -2761,6 +2763,17 @@ impl Streaming {
                         .load(std::sync::atomic::Ordering::Relaxed),
                     "forced chunk load after generation stopped"
                 );
+                // A generation that failed never produces the column, and this
+                // loop runs no sweep, the only place a failure mark is dropped:
+                // waiting would hold the server thread for ever (`/forceload`).
+                // The column stays forced and unloaded; it is asked for again
+                // once the mark clears.
+                if blocked_by_a_failed_generation(&self.failed, world, self.decorates, x, z) {
+                    log::warn!(
+                        "Horizon: the forced chunk ({x}, {z}) did not generate; it stays unloaded"
+                    );
+                    break;
+                }
                 // Pump the existing generation queue. Keep unloads for the
                 // normal owner update, which saves entities and notifies mods.
                 let mut plan = self.plan_update(world);
@@ -3635,6 +3648,25 @@ fn keep_decorated(
         }
     }
     (kept, failed)
+}
+
+/// Whether a failed generation stops the forced load at `(x, z)`: its own, or
+/// one the column needs before it can tick. Finishing needs the 3x3 around it
+/// decorated, and a decorated neighbour needs its own 3x3 generated, so with
+/// decoration a failure two chunks out stops the column too. Only the sweep
+/// clears a failure mark, and the load barrier runs no sweep: waiting again
+/// would never end.
+fn blocked_by_a_failed_generation(
+    failed: &FxHashSet<(i32, i32)>,
+    world: &World,
+    decorates: bool,
+    x: i32,
+    z: i32,
+) -> bool {
+    let reach = if decorates { 2 } else { 1 };
+    failed.iter().any(|&(fx, fz)| {
+        (fx - x).abs().max((fz - z).abs()) <= reach && !world.chunks.contains_key(&(fx, fz))
+    })
 }
 
 /// Take save ownership before dispatch, so no generation job can mutate the view.
@@ -4665,6 +4697,37 @@ mod tests {
         assert_eq!(failed, [(11, -3)]);
         assert_eq!(keys(&kept).len(), 7);
         assert!(!keys(&kept).contains(&(11, -3)));
+    }
+
+    /// The barrier a forced chunk waits behind (`/forceload`, a mod's ticket)
+    /// ends when a generation it needs failed: a failure never becomes a
+    /// column, and the barrier runs no sweep, the only place a mark is
+    /// dropped, so waiting again for the same chunk would never end.
+    #[test]
+    fn a_forced_load_gives_up_when_the_generation_it_needs_failed() {
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let blocked = |keys: &[(i32, i32)], world: &World, decorates: bool, x: i32, z: i32| {
+            let failed: FxHashSet<(i32, i32)> = keys.iter().copied().collect();
+            blocked_by_a_failed_generation(&failed, world, decorates, x, z)
+        };
+        // Nothing failed: the barrier waits.
+        assert!(!blocked(&[], &world, false, 0, 0));
+        assert!(!blocked(&[], &world, true, 0, 0));
+        for decorates in [false, true] {
+            // Its own failure, or a neighbour's: the column cannot come.
+            assert!(blocked(&[(0, 0)], &world, decorates, 0, 0), "{decorates}");
+            assert!(blocked(&[(1, 0)], &world, decorates, 0, 0), "{decorates}");
+            // A failure three chunks out is outside either reach.
+            assert!(!blocked(&[(3, 0)], &world, decorates, 0, 0), "{decorates}");
+        }
+        // Decoration needs the 3x3 around the column decorated, so a failure
+        // two chunks out stops it; without decoration nothing that far does.
+        assert!(blocked(&[(2, 0)], &world, true, 0, 0));
+        assert!(!blocked(&[(2, 0)], &world, false, 0, 0));
+        // A failed generation whose column has since arrived stops nothing.
+        world.chunks.insert((1, 0), Arc::new(Chunk::empty(1, 0)));
+        assert!(!blocked(&[(1, 0)], &world, true, 0, 0));
+        assert!(!blocked(&[(1, 0)], &world, false, 0, 0));
     }
 
     /// Batches taken from the plan are the full scan's, as jobs finish,
