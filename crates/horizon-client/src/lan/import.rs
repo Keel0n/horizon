@@ -665,18 +665,23 @@ mod tests {
     #[test]
     fn a_raw_position_accepts_numeric_tags_and_refuses_nan_and_the_far_world() {
         let doubles = |v: [f64; 3]| {
-            Tag::compound([("Pos", Tag::List(v.map(|v| Tag::Double(v.to_bits())).to_vec()))])
+            Tag::compound([(
+                "Pos",
+                Tag::List(v.map(|v| Tag::Double(v.to_bits())).to_vec()),
+            )])
         };
         assert!(check_raw_position(&doubles([8.5, 64.0, -2.5])).is_ok());
-        assert!(check_raw_position(&Tag::compound([(
-            "Pos",
-            Tag::List(vec![
-                Tag::Int(8),
-                Tag::Float(64.0f32.to_bits()),
-                Tag::Long(-2),
-            ]),
-        )]))
-        .is_ok());
+        assert!(
+            check_raw_position(&Tag::compound([(
+                "Pos",
+                Tag::List(vec![
+                    Tag::Int(8),
+                    Tag::Float(64.0f32.to_bits()),
+                    Tag::Long(-2),
+                ]),
+            )]))
+            .is_ok()
+        );
         assert!(check_raw_position(&doubles([f64::NAN, 64.0, 0.0])).is_err());
         assert!(check_raw_position(&doubles([40_000_000.0, 64.0, 0.0])).is_err());
         assert!(check_raw_position(&Tag::Compound(Default::default())).is_ok());
