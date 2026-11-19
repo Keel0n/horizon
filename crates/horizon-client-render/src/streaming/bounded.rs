@@ -15,11 +15,17 @@ pub(super) fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
     candidates.sort_unstable();
 }
 
-/// The mesh time one worker's columns may take in a tick: a quarter of a 20 Hz
-/// tick (Minecraft's 50 ms), so the pool starts a few heavy columns per tick
-/// rather than every idle worker's at once, and a heavy column's tail does not
-/// run under the next tick's light and generate jobs.
-pub(super) const MESH_SLICE_NANOS: u64 = 12_500_000;
+/// The mesh time one worker's columns may take: half a 20 Hz tick (Minecraft's
+/// 50 ms), so the pool holds a few heavy columns in flight rather than every idle
+/// worker's at once, and a heavy column's tail does not run under the next tick's
+/// light and generate jobs. With seven workers that is 175 ms of meshing in
+/// flight: five 30 ms sections at a time instead of seven, and 175 one-millisecond
+/// sections against the room check's 224, so light work is barely touched. A
+/// quarter of a tick left two heavy sections on a quarter of the pool, which the
+/// first-chunk and fresh-world timings (#18196, #18192) would show; a whole tick
+/// would leave this all but the room check it was. The number is the one tuning
+/// winch here, and a measurement decides it.
+pub(super) const MESH_SLICE_NANOS: u64 = 25_000_000;
 
 /// Whether one more column of `cost` fits what is left of the mesh slice (issue
 /// #18239). `left` is the slice for all workers less what the columns in flight

@@ -2299,7 +2299,7 @@ impl Streaming {
         // them until the system swapped.
         let room = (self.workers * 32).saturating_sub(self.meshing.len() + self.upload_backlog);
         nearest_first(&mut candidates, room);
-        // The same queue also fits a quarter of a tick's meshing per worker,
+        // The same queue also fits half a tick's meshing per worker,
         // priced from what mesh jobs have cost lately (`job_stats`): a worker
         // still inside one heavy column is not handed the next, so the tick's
         // seven jobs don't all run past it, holding a 3x3 snapshot made stale
