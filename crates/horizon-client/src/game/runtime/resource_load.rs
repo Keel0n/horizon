@@ -564,10 +564,11 @@ pub(super) fn load_resources(
     };
     resolved = client_reload::stage_runtime_sprites(resolved, &runtime_sprites);
     resolved = client_reload::stage_texture_atlases(resolved, &texture_atlases);
-    let threads = settings.horizon.worker_threads();
     // Battery Mode is a client's: a dedicated server keeps its pools whole. Fixed
-    // here, before any pool starts; a later change waits for the next launch.
+    // here, before any pool size is read or a pool starts; a later change waits
+    // for the next launch.
     horizon_threads::sizing::set_battery(settings.horizon.battery && !headless);
+    let threads = settings.horizon.worker_threads();
     // One pool of workers for every level's streaming, the client's and the
     // server thread's (horizon_threads::jobs), sized before any world opens.
     horizon_threads::jobs::configure(threads);
