@@ -798,3 +798,52 @@ fn an_aborted_streaming_does_not_hold_the_save() {
         started.elapsed()
     );
 }
+
+/// A crash stop gives up on the save jobs too: the worker that panicked in one
+/// never answers it, and the crash hook's 30 s must write the world instead.
+#[test]
+fn a_crash_stop_does_not_wait_for_a_lost_save_job() {
+    use horizon_client::streaming::ProtoSave;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Saving {
+        started: Arc<AtomicBool>,
+    }
+    impl ChunkGenerator for Saving {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
+            Box::new(())
+        }
+        fn finish(&self, _: Proto) -> Chunk {
+            Chunk::empty(0, 0)
+        }
+        fn save_protos(&self, _: &[&Proto]) {
+            self.started.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(1500));
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let started = Arc::new(AtomicBool::new(false));
+    let mut streaming = Streaming::new(
+        Arc::new(Saving { started: started.clone() }),
+        worker_context(&root),
+        2,
+    );
+    let mut world = World::new(BlockStateId(0), 0);
+    streaming.submit_protos(vec![ProtoSave { pos: (0, 0), proto: Box::new(()) }]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !started.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the save job never started");
+        thread::sleep(Duration::from_millis(5));
+    }
+    streaming.abort_generation_for_a_crash();
+    let started_saving = Instant::now();
+    let _step = streaming.prepare_save(&mut world, true, started_saving + Duration::from_secs(10));
+    assert!(
+        started_saving.elapsed() < Duration::from_millis(500),
+        "the save waited {:?} for a save job whose worker is gone",
+        started_saving.elapsed()
+    );
+}

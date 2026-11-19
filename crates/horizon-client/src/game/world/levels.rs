@@ -608,10 +608,10 @@ impl Levels {
     }
 
     /// Abort every parked level's generation, as a crash stop does for the
-    /// level in place (`Streaming::abort_generation`).
-    pub(super) fn abort_parked_generation(&mut self) {
+    /// level in place (`Streaming::abort_generation_for_a_crash`).
+    pub(super) fn abort_parked_generation_for_a_crash(&mut self) {
         for level in self.parked.values_mut() {
-            level.streaming.abort_generation();
+            level.streaming.abort_generation_for_a_crash();
         }
     }
 

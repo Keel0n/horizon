@@ -374,6 +374,9 @@ struct Shared {
     /// cleared buffers avoids racing the renderer for the process heap.
     meshes: Mutex<MeshPool>,
     aborted: std::sync::atomic::AtomicBool,
+    /// The crash stop's abort (`abort_generation_for_a_crash`): the save gives
+    /// up on the jobs out too, whose worker may be the one that panicked.
+    crashed: std::sync::atomic::AtomicBool,
 }
 #[derive(Default)]
 struct MeshPool {
@@ -1184,6 +1187,7 @@ impl Streaming {
             done: Mailbox::default(),
             meshes: Mutex::new(MeshPool::default()),
             aborted: std::sync::atomic::AtomicBool::new(false),
+            crashed: std::sync::atomic::AtomicBool::new(false),
         });
         let light_tables = context.light.clone();
         let saves: Arc<dyn Saves> = generator.clone();
@@ -2595,6 +2599,16 @@ impl Streaming {
         self.lighting.clear();
         self.jobs.notify_all();
     }
+    /// `abort_generation` for a crash stop: a worker that panicked cannot
+    /// answer the job it was running, and the save must not wait for it (the
+    /// `saving` jobs), or the crash hook's 30 s run out before the world is
+    /// written.
+    pub fn abort_generation_for_a_crash(&mut self) {
+        self.shared
+            .crashed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.abort_generation();
+    }
     /// Save what generation holds outside the world: the proto chunks
     /// decoration wrote to. With `wait`, the decorations, columns and saves
     /// in flight are waited for first (their proto chunks are out in the
@@ -2616,6 +2630,18 @@ impl Streaming {
         }
     }
 
+    /// Whether a save has to wait for more: the jobs out, unless a crash stop
+    /// gave up on them, and the decoration, finishing and light-view work in
+    /// flight, unless generation was aborted at all.
+    fn save_waits(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let aborted = self.shared.aborted.load(Ordering::Relaxed);
+        let crashed = self.shared.crashed.load(Ordering::Acquire);
+        (!crashed && self.saving > 0)
+            || (!aborted
+                && (self.decorating > 0 || !self.finishing.is_empty() || !self.viewing.is_empty()))
+    }
+
     /// Check out the proto saves, yielding for late full saves first.
     pub fn prepare_save(
         &mut self,
@@ -2627,14 +2653,7 @@ impl Streaming {
             let written: Vec<(i32, i32)> = self.written.drain().collect();
             return SaveStep::Protos(self.checkout_protos(written));
         }
-        let aborted = self
-            .shared
-            .aborted
-            .load(std::sync::atomic::Ordering::Relaxed);
-        while (self.saving > 0)
-            || (!aborted
-                && (self.decorating > 0 || !self.finishing.is_empty() || !self.viewing.is_empty()))
-        {
+        while self.save_waits() {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.shared.done.recv_timeout(left) {
                 Some(Done::Decorated(x, z, region, finals, writes)) => {
@@ -2713,14 +2732,7 @@ impl Streaming {
         if now() >= deadline {
             return SaveStep::Pending;
         }
-        let aborted = self
-            .shared
-            .aborted
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if (self.saving > 0)
-            || (!aborted
-                && (self.decorating > 0 || !self.finishing.is_empty() || !self.viewing.is_empty()))
-        {
+        if self.save_waits() {
             return SaveStep::Pending;
         }
         let written: Vec<_> = self.written.drain().collect();
