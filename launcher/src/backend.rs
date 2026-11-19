@@ -1237,9 +1237,16 @@ pub use developer_play::client_as;
 mod installation;
 pub(crate) use installation::install_as;
 
+/// Removes the installed version `tag` unless a program runs from it. A build that predates
+/// runtime leases takes none, so no lease can ever prove its folder unused: the check [`in_use`]
+/// makes here is that proof, and it stands beside the removal it justifies.
 pub fn remove(tag: &str) -> Result<(), String> {
+    if in_use(tag) {
+        return Err(format!("{tag} is running. Quit it first."));
+    }
     let dir = version_dir(tag);
-    crate::cache_cleanup::delete_game_unit(&dir).map_err(crate::native_mods::cache_error)?;
+    crate::cache_cleanup::delete_unleased_game_unit(&dir)
+        .map_err(crate::native_mods::cache_error)?;
     forget_prepared();
     Ok(())
 }
@@ -2928,9 +2935,6 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
             &[("build", &build)],
         ));
     }
-    if in_use(tag) {
-        return Err(format!("{tag} is running. Quit it first."));
-    }
     remove(tag)?;
     crate::storage::eviction::request_cleanup();
     let mut settings = Settings::load();
@@ -4526,6 +4530,111 @@ mod tests {
         })
         .unwrap();
         assert!(!dir.exists());
+    }
+
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): a client from before the
+    /// capability marker takes no runtime lease and never can, so nothing but the process check
+    /// can prove its folder unused — and a shared cache, which any installed build reads without
+    /// a lease, stays refused.
+    #[test]
+    fn a_version_whose_client_predates_runtime_leases_is_removed() {
+        let Some(root) = std::env::var_os("LEGACY_REMOVE_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_version_whose_client_predates_runtime_leases_is_removed"
+                ])
+                .env("LEGACY_REMOVE_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let dir = versions.join("v0.1.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), b"").unwrap();
+        fs::write(dir.join(CLIENT), b"pre-holder game").unwrap();
+        assert_eq!(installed_in(&versions), vec!["v0.1.0".to_owned()]);
+        // Shared units are read by any installed build, this one included: no proof can free
+        // one while a build without leases is installed.
+        let cache = root.join("cache/github");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("pack.hpack"), b"whole pack").unwrap();
+        assert!(matches!(
+            crate::cache_cleanup::delete_game_unit(&cache),
+            Err(crate::native_cache::Error::UnprovenExclusion)
+        ));
+        assert_eq!(fs::read(cache.join("pack.hpack")).unwrap(), b"whole pack");
+        remove_version("v0.1.0").unwrap();
+        assert!(!dir.exists());
+        assert!(installed_in(&versions).is_empty());
+    }
+
+    /// [#18393](https://github.com/horizon-rust/horizon/issues/18393): the proof is the check that
+    /// nothing runs from the version, so a version somebody still runs is refused whole — the
+    /// completion marker stays and the folder stays listed — and the same call removes it once
+    /// that program is gone.
+    #[test]
+    #[cfg(windows)]
+    fn a_running_legacy_version_is_refused_whole_and_removed_once_it_closes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let Some(root) = std::env::var_os("OPEN_LEGACY_TEST_ROOT") else {
+            let root = tempfile::tempdir().unwrap();
+            assert!(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::a_running_legacy_version_is_refused_whole_and_removed_once_it_closes"
+                ])
+                .env("OPEN_LEGACY_TEST_ROOT", root.path())
+                .env("HORIZON_LAUNCHER_HOME", root.path())
+                .env("HORIZON_HOME", root.path().join("home"))
+                .env("XDG_DATA_HOME", root.path().join("xdg-data"))
+                .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
+                .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
+                .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+                .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
+                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("HORIZON_NO_AUDIO", "1")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        };
+        let root = PathBuf::from(root);
+        let versions = root.join("versions");
+        let dir = versions.join("v0.1.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(COMPLETE), b"").unwrap();
+        fs::write(dir.join(CLIENT), b"pre-holder game").unwrap();
+        // A running image refuses writes the way the loader's own handle does, which is what the
+        // check standing in for the missing lease looks at.
+        let running = fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(dir.join(CLIENT))
+            .unwrap();
+        assert!(remove_version("v0.1.0").is_err());
+        assert!(
+            dir.join(COMPLETE).exists(),
+            "the version stays whole for the retry"
+        );
+        assert_eq!(installed_in(&versions), vec!["v0.1.0".to_owned()]);
+        drop(running);
+        remove_version("v0.1.0").unwrap();
+        assert!(!dir.exists());
+        assert!(installed_in(&versions).is_empty());
     }
 
     /// A canonical path loses Windows' verbatim prefix on a drive (horizon-mixins' output

@@ -119,7 +119,7 @@ impl Cache {
         self.process(None, false)
     }
     pub(crate) fn clear(&self) -> Result<u64, Error> {
-        crate::cache_cleanup::Access::IncompleteGame.check()?;
+        crate::cache_cleanup::Access::IncompleteGame.check(crate::cache_cleanup::Proof::Lease)?;
         self.process(None, true)
     }
     #[cfg(test)]
@@ -130,7 +130,7 @@ impl Cache {
         if self.bytes()? <= limit {
             return Ok(0);
         }
-        crate::cache_cleanup::Access::IncompleteGame.check()?;
+        crate::cache_cleanup::Access::IncompleteGame.check(crate::cache_cleanup::Proof::Lease)?;
         self.process(Some(limit), true)
     }
 
