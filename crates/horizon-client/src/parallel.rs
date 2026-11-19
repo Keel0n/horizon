@@ -464,6 +464,46 @@ mod tests {
         }
     }
 
+    /// Runs `body` in a process of its own with `HORIZON_PARALLEL_TICK=auto`: the variable is read
+    /// once per process, so the case that needs it there needs its own process too, as
+    /// `game::in_own_process` runs the cases that need their own process-wide state.
+    fn with_auto_in_own_process(name: &str, body: impl FnOnce()) {
+        const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
+        if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
+            return body();
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--test-threads=1"])
+            .env(OWN_PROCESS, name)
+            .env("HORIZON_PARALLEL_TICK", "auto")
+            .output()
+            .unwrap();
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.status.success() && report.contains("test result: ok. 1 passed;"),
+            "{name} failed in its own process:\n{report}"
+        );
+    }
+
+    /// `HORIZON_PARALLEL_TICK=auto` must not land on top of a setting a window applied first: the
+    /// window's settings run before the first tick, and the variable is read before a setting is
+    /// applied, so the setting stands and the next tick stays on one thread.
+    #[test]
+    fn the_variable_does_not_override_a_setting_applied_first() {
+        with_auto_in_own_process(
+            "parallel::tests::the_variable_does_not_override_a_setting_applied_first",
+            || {
+                set_setting(ParallelTickMode::Off);
+                assert_eq!(status().0, "off", "the window's setting stands");
+                assert!(!status().1, "the next tick stays on one thread");
+            },
+        );
+    }
+
     /// The variable's `auto` applies the Auto setting when the variable is read, and a setting
     /// applied after that stands: `set_setting` reads the variable first, so Auto cannot land on
     /// top of a setting the window has applied.
