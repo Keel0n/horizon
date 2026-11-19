@@ -1616,8 +1616,9 @@ impl Recipes {
             &ResolvedSources::resolve(sources, context)?,
         )
     }
-    /// The tables from the condition-selected recipes of one owning load. Unknown serializers
-    /// refuse the generation; malformed known recipes keep the skip-one-file policy.
+    /// The tables from the condition-selected recipes of one owning load. An unknown serializer
+    /// vanilla's or an installed code mod's namespace claims refuses the generation, as that code
+    /// was to register it; a carried content mod's own type is skipped with the malformed files.
     /// root and overlay give the enchantment tags the tables keep.
     pub fn from_resolved(
         root: &Path,
@@ -1653,11 +1654,7 @@ impl Recipes {
                 };
                 match mod_kinds::recipe_type(name, serializer)? {
                     mod_kinds::Reading::Type(kind) => {
-                        entry = Some(crate::crafting::RecipeSnapshot::new(
-                            id,
-                            kind,
-                            json.clone(),
-                        ));
+                        entry = Some(crate::crafting::RecipeSnapshot::new(id, kind, json.clone()));
                     }
                     mod_kinds::Reading::Unread => {
                         // A carried content mod's own type: no mod here reads

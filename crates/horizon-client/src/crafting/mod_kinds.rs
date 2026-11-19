@@ -50,7 +50,9 @@ pub fn recipe_type(file: &str, serializer: &str) -> Result<Reading, String> {
     {
         return Ok(Reading::Type(recipe_type));
     }
-    let (namespace, _) = serializer.split_once(':').unwrap_or(("minecraft", serializer));
+    let (namespace, _) = serializer
+        .split_once(':')
+        .unwrap_or(("minecraft", serializer));
     if namespace == "minecraft"
         || mod_api::__private::installed_code_ids().any(|id| id == namespace)
     {
