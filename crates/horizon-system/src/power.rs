@@ -28,6 +28,11 @@ const SLEEP_GAP: Duration = Duration::from_secs(30);
 #[cfg(all(unix, not(target_os = "macos")))]
 const SYSFS: &str = "/sys/class/power_supply";
 
+/// `BatteryFlag`'s "no system battery" bit (`GetSystemPowerStatus`). Read by
+/// [`windows_reading_from`], which only Windows calls (a test calls it anywhere).
+#[cfg_attr(not(windows), allow(dead_code))]
+const NO_BATTERY: u8 = 128;
+
 /// What powers the machine, as the OS names it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Source {
@@ -406,19 +411,25 @@ fn windows_reading() -> Reading {
 }
 
 /// `GetSystemPowerStatus`'s answer as a reading: `ACLineStatus` (1 on mains, 0 on the battery,
-/// 255 for the API's own "unknown") and `SystemStatusFlag`'s first bit, the energy saver.
-/// `BatteryFlag` says only whether there is a battery at all, which doesn't change what the
-/// machine runs on: a desktop reads `ac`, as it does on the other two platforms. Built on every
-/// platform so a test can check the parsing anywhere; only Windows calls it. Windows reports no
-/// thermal state to a game.
+/// 255 for the API's own "unknown"), `BatteryFlag`'s [`NO_BATTERY`] bit, and `SystemStatusFlag`'s
+/// first bit, the energy saver. A machine that has no battery has no supply to name, and stays
+/// unknown: [`crate::power`] gives `None` for it, as it does on the other two platforms' desktops.
+/// Built on every platform so a test can check the parsing anywhere; only Windows calls it.
+/// Windows reports no thermal state to a game.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn windows_reading_from(ac_line: u8, _battery_flag: u8, system_status: u8) -> Reading {
-    Reading {
-        source: match ac_line {
+fn windows_reading_from(ac_line: u8, battery_flag: u8, system_status: u8) -> Reading {
+    let source = if battery_flag & NO_BATTERY != 0 {
+        Source::Unknown
+    } else {
+        match ac_line {
             1 => Source::Ac,
             0 => Source::Battery,
+            // The API's own "unknown".
             _ => Source::Unknown,
-        },
+        }
+    };
+    Reading {
+        source,
         saver: system_status & 1 == 1,
         thermal: Thermal::Unknown,
     }
@@ -513,6 +524,19 @@ mod tests {
             let source = power_supply_source(fixture.path());
             assert_eq!(source, Source::Unknown);
             channel.observe(reading(source), false);
+        }
+        assert_eq!(channel.transitions, 0);
+        // And for a desktop on Windows, whose `BatteryFlag` says it has no battery: no supply to
+        // name, so ticks of it are no change either, even with the mains online.
+        assert_eq!(
+            windows_reading_from(1, NO_BATTERY, 0).source,
+            Source::Unknown
+        );
+        for _ in 0..3 {
+            channel.observe(
+                reading(windows_reading_from(1, NO_BATTERY, 0).source),
+                false,
+            );
         }
         assert_eq!(channel.transitions, 0);
     }
@@ -617,13 +641,21 @@ mod tests {
         let ac = windows_reading_from(1, 0, 0);
         assert_eq!(ac.source, Source::Ac);
         assert!(!ac.saver);
-        // A desktop: `BatteryFlag`'s bit 7 says there is no battery, and it still draws from the
-        // mains, so the source follows `ACLineStatus` and not the flag.
-        assert_eq!(windows_reading_from(1, 128, 0).source, Source::Ac);
-        // A laptop whose battery was pulled out runs on the mains the same way.
-        assert_eq!(windows_reading_from(1, 128, 1).source, Source::Ac);
-        // 255 is the API's own "I don't know", with or without a battery present.
-        assert_eq!(windows_reading_from(255, 128, 0).source, Source::Unknown);
+        // A desktop: `BatteryFlag`'s bit 7 says there is no battery, so there is no supply to
+        // name, whatever `ACLineStatus` says (`crate::power` gives `None` for one).
+        assert_eq!(
+            windows_reading_from(1, NO_BATTERY, 0).source,
+            Source::Unknown
+        );
+        assert_eq!(
+            windows_reading_from(0, NO_BATTERY, 0).source,
+            Source::Unknown
+        );
+        assert_eq!(
+            windows_reading_from(255, NO_BATTERY, 0).source,
+            Source::Unknown
+        );
+        // 255 is the API's own "I don't know", with a battery present or without.
         assert_eq!(windows_reading_from(255, 0, 0).source, Source::Unknown);
         // Windows tells a game nothing about heat.
         assert_eq!(ac.thermal, Thermal::Unknown);
