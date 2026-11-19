@@ -30,7 +30,9 @@ fn from_env(value: Option<&str>) -> (Option<u8>, bool) {
 }
 
 /// `HORIZON_PARALLEL_TICK`, whatever the setting says, except `auto`: that one applies the Auto
-/// setting once and forces nothing, so the machine decides (a dedicated server's `"auto"`).
+/// setting once and forces nothing, so the machine decides (a dedicated server's `"auto"`). A later
+/// [`set_setting`] overrides it: on a client the window owns the setting (`apply_ui_settings`, a
+/// settings change or a pack reload), while a dedicated server has no window, so its `auto` stays.
 fn forced() -> Option<u8> {
     static FORCED: OnceLock<Option<u8>> = OnceLock::new();
     *FORCED.get_or_init(|| {

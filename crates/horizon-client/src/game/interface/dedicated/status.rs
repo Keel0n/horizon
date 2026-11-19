@@ -160,7 +160,7 @@ impl Game<'_> {
                 .collect();
             (players, h.hub.lan.shared.max_players())
         });
-        // Parallel Tick: the setting, whether the next tick shares its work, and Auto's state.
+        // Parallel Tick: the setting, whether the next tick shares its work, and where Auto is.
         let (parallel_setting, parallel_on, parallel_auto) = horizon_client::parallel::status();
         json!({
             "tps": state.tps(),
@@ -176,12 +176,7 @@ impl Game<'_> {
             "chunks": self.world.chunks.len(),
             "levels": self.status_levels(),
             "paused": state.paused,
-            // Where Auto is: `watching`, `trial` or `kept`, as the window's status reports it.
-            "parallel_tick": {
-                "setting": parallel_setting,
-                "on": parallel_on,
-                "auto": parallel_auto,
-            },
+            "parallel_tick": { "setting": parallel_setting, "on": parallel_on, "auto": parallel_auto },
         })
     }
 }
