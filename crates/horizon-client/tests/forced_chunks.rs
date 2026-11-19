@@ -79,6 +79,50 @@ impl ChunkGenerator for Plain {
     }
 }
 
+/// `Plain` with one column whose generation fails: its proto says so, as the
+/// generator reports a generation that threw (`ChunkGenerator::generated`).
+struct Failing {
+    failed: (i32, i32),
+}
+
+impl ChunkGenerator for Failing {
+    type Worker = ();
+    fn worker(&self) {}
+    fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
+        Box::new(Column {
+            x,
+            z,
+            decorated: false,
+        })
+    }
+    fn generated(&self, proto: &Proto) -> bool {
+        proto
+            .downcast_ref::<Column>()
+            .is_some_and(|c| (c.x, c.z) != self.failed)
+    }
+    fn decorates(&self) -> bool {
+        true
+    }
+    fn decorate(&self, _: &mut (), region: &mut [Proto; 9]) {
+        region[4].downcast_mut::<Column>().unwrap().decorated = true;
+    }
+    fn is_decorated(&self, proto: &Proto) -> bool {
+        proto.downcast_ref::<Column>().is_some_and(|c| c.decorated)
+    }
+    fn finish(&self, proto: Proto) -> Chunk {
+        let column = *proto.downcast::<Column>().unwrap();
+        Chunk::empty(column.x, column.z)
+    }
+    fn light_view(&self, proto: &Proto) -> Option<Chunk> {
+        let column = proto.downcast_ref::<Column>()?;
+        Some(Chunk::empty(column.x, column.z))
+    }
+    fn non_air_sections(&self, proto: &Proto) -> Option<SectionMask> {
+        proto.downcast_ref::<Column>()?;
+        Some(SectionMask::single(4))
+    }
+}
+
 #[test]
 fn forced_chunks_reach_vanillas_rings() {
     let Some(root) = resources() else {
@@ -153,4 +197,70 @@ fn forced_chunks_reach_vanillas_rings() {
             assert_eq!(proto, None, "({x}, {z})");
         }
     }
+}
+
+/// The load barrier of a forced chunk ends when the generation it needs
+/// failed: the mark never becomes a column, and the barrier runs no sweep, the
+/// only place a mark is dropped, so waiting again would never end (#18403).
+#[test]
+fn a_forced_load_ends_when_its_generation_failed() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let render = Arc::new(
+        assets
+            .reload(&horizon_assets::resource_source::ResourceRoot::directory(
+                root.to_path_buf(),
+            ))
+            .unwrap(),
+    );
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let visibility = models::load_visibility(&root, assets.registry).unwrap();
+    let context = Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility, None).unwrap()),
+        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(
+            Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+                root.to_path_buf(),
+            ))
+            .unwrap(),
+        ),
+        assets,
+        render: render.clone(),
+        hidden_states: Arc::from([]),
+        part_tables: Default::default(),
+    });
+    let generator = Arc::new(Failing { failed: (40, -40) });
+    let mut streaming = Streaming::new(generator, context, 2);
+    streaming.center = (0, 0);
+    streaming.radius = 2;
+    let mut world = World::new(BlockStateId(0), 0);
+    // The barrier runs in a thread of its own: without the failure exit it
+    // never returns, and the test has to fail rather than hang.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let barrier = thread::spawn(move || {
+        let changed = streaming.set_forced_loaded(&mut world, 40, -40, true);
+        let _ = tx.send((changed, world, streaming));
+    });
+    let (_changed, mut world, streaming) = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the forced load barrier never returned");
+    barrier.join().unwrap();
+    // The failed generation is not finished into an empty column.
+    assert!(
+        !world.chunks.contains_key(&(40, -40)),
+        "a failed generation became a column"
+    );
+    // A column beside it needs the failed one's decoration, so its own
+    // barrier has to end too.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let barrier = thread::spawn(move || {
+        let changed = streaming.set_forced_loaded(&mut world, 41, -40, true);
+        let _ = tx.send((changed, world, streaming));
+    });
+    let (_changed, _world, _streaming) = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the forced load beside the failed column never returned");
+    barrier.join().unwrap();
 }
