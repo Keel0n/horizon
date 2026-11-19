@@ -3,9 +3,10 @@
 //! Vanilla's `Avatar.DATA_PLAYER_MAIN_HAND` is entity data index 15, a
 //! `HumanoidArm` (serializer 42) whose default is RIGHT = 1 and whose LEFT is
 //! 0 (`Avatar.java:38`, `HumanoidArm.java:13-14`). Its dirty entries go to the
-//! player itself as well as to every tracker (`ChunkMap.java:1352-1356`), and
-//! only when they differ from the default, so a right-handed player is never
-//! sent the index and a left-handed one is, once.
+//! player itself as well as to every tracker (`ChunkMap.java:1352-1356`), and a
+//! change back to the default is a dirty entry too (`SynchedEntityData.java:60-68`,
+//! `:74-90`). Pairing sends the non-default values only (`ServerEntity.java:311-312`),
+//! so a right-handed player gets nothing until they change from LEFT.
 use super::*;
 
 /// The index of a `HumanoidArm` value in `EntityDataSerializers`.
