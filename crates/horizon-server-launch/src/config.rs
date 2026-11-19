@@ -445,35 +445,25 @@ impl Serialize for ParallelTick {
 
 impl<'de> Deserialize<'de> for ParallelTick {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct Value;
-        impl serde::de::Visitor<'_> for Value {
-            type Value = ParallelTick;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("true, false or \"auto\"")
-            }
-
-            fn visit_bool<E: serde::de::Error>(self, on: bool) -> Result<ParallelTick, E> {
-                Ok(if on {
-                    ParallelTick::On
-                } else {
-                    ParallelTick::Off
-                })
-            }
-
-            /// `"auto"`: the game decides. A quoted `true` or `false` reads as it does unquoted.
-            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<ParallelTick, E> {
-                match text {
-                    "auto" => Ok(ParallelTick::Auto),
-                    "true" => Ok(ParallelTick::On),
-                    "false" => Ok(ParallelTick::Off),
-                    other => Err(E::custom(format!(
-                        "parallel_tick is {other:?}: use true, false or \"auto\""
-                    ))),
-                }
-            }
+        use serde::de::Error as _;
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Bool(bool),
+            Text(String),
         }
-        d.deserialize_any(Value)
+        match Value::deserialize(d)? {
+            Value::Bool(on) => Ok(if on { Self::On } else { Self::Off }),
+            // `"auto"`: the game decides. A quoted `true` or `false` reads as it does unquoted.
+            Value::Text(text) => match text.as_str() {
+                "auto" => Ok(Self::Auto),
+                "true" => Ok(Self::On),
+                "false" => Ok(Self::Off),
+                other => Err(D::Error::custom(format!(
+                    "parallel_tick is {other:?}: use true, false or \"auto\""
+                ))),
+            },
+        }
     }
 }
 
