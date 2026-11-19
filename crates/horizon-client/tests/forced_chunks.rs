@@ -40,19 +40,38 @@ struct Column {
     decorated: bool,
 }
 
-/// A generator that makes every column: a proto, decorated on request, and
-/// finished into a level chunk.
-struct Plain;
+/// A generator that makes every column: a proto, decorated on request and
+/// finished into a level chunk. One column can fail its generation, as a
+/// generator reports one that threw (`ChunkGenerator::generated`), and one can
+/// come from the save.
+struct Plain {
+    failed: Option<(i32, i32)>,
+    saved: Option<(i32, i32)>,
+}
 
 impl ChunkGenerator for Plain {
     type Worker = ();
     fn worker(&self) {}
+    /// The one column the save already holds: the barrier must load it even
+    /// when a failed generation sits one chunk away.
+    fn load(&self, x: i32, z: i32) -> Option<Chunk> {
+        if self.saved == Some((x, z)) {
+            Some(Chunk::empty(x, z))
+        } else {
+            None
+        }
+    }
     fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
         Box::new(Column {
             x,
             z,
             decorated: false,
         })
+    }
+    fn generated(&self, proto: &Proto) -> bool {
+        proto
+            .downcast_ref::<Column>()
+            .is_some_and(|c| Some((c.x, c.z)) != self.failed)
     }
     fn decorates(&self) -> bool {
         true
@@ -79,83 +98,45 @@ impl ChunkGenerator for Plain {
     }
 }
 
-/// `Plain` with one column whose generation fails: its proto says so, as the
-/// generator reports a generation that threw (`ChunkGenerator::generated`),
-/// and one the save already holds.
-struct Failing {
-    failed: (i32, i32),
-    saved: (i32, i32),
-}
-
-impl ChunkGenerator for Failing {
-    type Worker = ();
-    fn worker(&self) {}
-    /// The one column the save already holds: the barrier must load it even
-    /// when a failed generation sits one chunk away.
-    fn load(&self, x: i32, z: i32) -> Option<Chunk> {
-        if (x, z) == self.saved {
-            Some(Chunk::empty(x, z))
-        } else {
-            None
-        }
-    }
-    fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
-        Box::new(Column {
-            x,
-            z,
-            decorated: false,
-        })
-    }
-    fn generated(&self, proto: &Proto) -> bool {
-        proto
-            .downcast_ref::<Column>()
-            .is_some_and(|c| (c.x, c.z) != self.failed)
-    }
-    fn decorates(&self) -> bool {
-        true
-    }
-    fn decorate(&self, _: &mut (), region: &mut [Proto; 9]) {
-        region[4].downcast_mut::<Column>().unwrap().decorated = true;
-    }
-    fn is_decorated(&self, proto: &Proto) -> bool {
-        proto.downcast_ref::<Column>().is_some_and(|c| c.decorated)
-    }
-    fn finish(&self, proto: Proto) -> Chunk {
-        let column = *proto.downcast::<Column>().unwrap();
-        Chunk::empty(column.x, column.z)
-    }
-    fn light_view(&self, proto: &Proto) -> Option<Chunk> {
-        let column = proto.downcast_ref::<Column>()?;
-        Some(Chunk::empty(column.x, column.z))
-    }
-    fn non_air_sections(&self, proto: &Proto) -> Option<SectionMask> {
-        proto.downcast_ref::<Column>()?;
-        Some(SectionMask::single(4))
-    }
-}
-
-/// `Streaming::set_forced_loaded` on owned state, for another thread to run.
-fn force_loaded(
-    mut streaming: Streaming,
-    mut world: World,
-    x: i32,
-    z: i32,
-) -> (bool, World, Streaming) {
-    let changed = streaming.set_forced_loaded(&mut world, x, z, true);
-    (changed, world, streaming)
+fn worker_context(root: &Path) -> Arc<WorkerContext> {
+    let assets = Arc::new(Assets::load(root).unwrap());
+    let render = Arc::new(
+        assets
+            .reload(&horizon_assets::resource_source::ResourceRoot::directory(
+                root.to_path_buf(),
+            ))
+            .unwrap(),
+    );
+    let facts = BlockFacts::load(root, assets.registry).unwrap();
+    let visibility = models::load_visibility(root, assets.registry).unwrap();
+    Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility, None).unwrap()),
+        light: Arc::new(LightTables::load(root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(
+            Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+                root.to_path_buf(),
+            ))
+            .unwrap(),
+        ),
+        assets,
+        render: render.clone(),
+        hidden_states: Arc::from([]),
+        part_tables: Default::default(),
+    })
 }
 
 /// One forced load barrier in a thread of its own: without the failure exit
 /// it never returns, and the test has to fail rather than hang.
 fn forced_load(
-    streaming: Streaming,
-    world: World,
+    mut streaming: Streaming,
+    mut world: World,
     (x, z): (i32, i32),
     never: &str,
 ) -> (World, Streaming) {
     let (tx, rx) = std::sync::mpsc::channel();
     let barrier = thread::spawn(move || {
-        let _ = tx.send(force_loaded(streaming, world, x, z));
+        let changed = streaming.set_forced_loaded(&mut world, x, z, true);
+        let _ = tx.send((changed, world, streaming));
     });
     let (_changed, world, streaming) = rx.recv_timeout(Duration::from_secs(20)).expect(never);
     barrier.join().unwrap();
@@ -167,31 +148,8 @@ fn forced_chunks_reach_vanillas_rings() {
     let Some(root) = resources() else {
         return;
     };
-    let assets = Arc::new(Assets::load(&root).unwrap());
-    let render = Arc::new(
-        assets
-            .reload(&horizon_assets::resource_source::ResourceRoot::directory(
-                root.to_path_buf(),
-            ))
-            .unwrap(),
-    );
-    let facts = BlockFacts::load(&root, assets.registry).unwrap();
-    let visibility = models::load_visibility(&root, assets.registry).unwrap();
-    let context = Arc::new(WorkerContext {
-        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility, None).unwrap()),
-        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
-        biomes: Arc::new(
-            Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
-                root.to_path_buf(),
-            ))
-            .unwrap(),
-        ),
-        assets,
-        render: render.clone(),
-        hidden_states: Arc::from([]),
-        part_tables: Default::default(),
-    });
-    let mut streaming = Streaming::new(Arc::new(Plain), context, 2);
+    let context = worker_context(&root);
+    let mut streaming = Streaming::new(Arc::new(Plain { failed: None, saved: None }), context, 2);
     // The player stands far away: only the forced chunk's own rings are
     // generated.
     streaming.center = (0, 0);
@@ -248,31 +206,8 @@ fn a_forced_load_ends_when_its_generation_failed() {
     let Some(root) = resources() else {
         return;
     };
-    let assets = Arc::new(Assets::load(&root).unwrap());
-    let render = Arc::new(
-        assets
-            .reload(&horizon_assets::resource_source::ResourceRoot::directory(
-                root.to_path_buf(),
-            ))
-            .unwrap(),
-    );
-    let facts = BlockFacts::load(&root, assets.registry).unwrap();
-    let visibility = models::load_visibility(&root, assets.registry).unwrap();
-    let context = Arc::new(WorkerContext {
-        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility, None).unwrap()),
-        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
-        biomes: Arc::new(
-            Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
-                root.to_path_buf(),
-            ))
-            .unwrap(),
-        ),
-        assets,
-        render: render.clone(),
-        hidden_states: Arc::from([]),
-        part_tables: Default::default(),
-    });
-    let generator = Arc::new(Failing { failed: (40, -40), saved: (40, -41) });
+    let context = worker_context(&root);
+    let generator = Arc::new(Plain { failed: Some((40, -40)), saved: Some((40, -41)) });
     let mut streaming = Streaming::new(generator, context, 2);
     streaming.center = (0, 0);
     streaming.radius = 2;
