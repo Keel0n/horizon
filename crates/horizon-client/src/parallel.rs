@@ -470,7 +470,7 @@ mod tests {
             return body();
         }
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([name, "--exact", "--test-threads=1"])
+            .args([name, "--include-ignored", "--exact", "--test-threads=1"])
             .env(OWN_PROCESS, name)
             .env("HORIZON_PARALLEL_TICK", "auto")
             .output()
@@ -490,6 +490,7 @@ mod tests {
     /// window's settings run before the first tick, and the variable is read before a setting is
     /// applied, so the setting stands and the next tick stays on one thread.
     #[test]
+    #[ignore = "daily"]
     fn the_variable_does_not_override_a_setting_applied_first() {
         with_auto_in_own_process(
             "parallel::tests::the_variable_does_not_override_a_setting_applied_first",
