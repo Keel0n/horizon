@@ -49,7 +49,7 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
   while the roll grows. Vanilla turns both axes at the same rate, which is why the
   horizontal look slows down as the pitch climbs.
 - On, a scoped first-person yaw is multiplied by `1/cos(pitch)`
-  (`mouse::spyglass_polar_yaw_scale`), which puts the sideways motion back; the pitch
+  (`spyglass_polar_look::yaw_scale`), which puts the sideways motion back; the pitch
   keeps vanilla's rate (`degrees_per_count`).
 - The factor is held at 8×, so it stops growing at 82.8°: at the pole itself `1/cos`
   would be an infinity, and the roll the turn adds grows with the factor, so a bounded

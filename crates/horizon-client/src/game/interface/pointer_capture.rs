@@ -15,10 +15,19 @@ impl Game<'_> {
             scoping: self.camera_type.is_first_person() && self.scoping(),
             invert_x: self.settings.invert_x,
             invert_y: self.settings.invert_y,
-            // Studio freecam turns its own camera before `MouseLook`'s scale means anything,
-            // and the pitch here is the player's, not the freecam's.
-            spyglass_polar_look: self.settings.extras.spyglass_polar_look && !self.studio.flying(),
-            pitch: self.pitch,
+            // Horizon's polar spyglass look, off unless `horizon-extras` is built: it is the
+            // client's own policy for a scoped turn, so it is read here, at the call, and the
+            // engine's mouse only gets the plain scale. A studio freecam turns its own camera
+            // before the scale means anything, and the pitch here is the player's, not the
+            // freecam's.
+            yaw_scale: if cfg!(feature = "horizon-extras") {
+                crate::spyglass_polar_look::yaw_scale(
+                    self.pitch,
+                    self.settings.extras.spyglass_polar_look && !self.studio.flying(),
+                )
+            } else {
+                1.0
+            },
         }
     }
     /// `MouseHandler.handleAccumulatedMovement` and `Entity.turn`, once per frame.

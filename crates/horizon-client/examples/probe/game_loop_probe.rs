@@ -188,10 +188,8 @@ fn mouse(c: &Value, out: &mut impl Write) -> Result<()> {
         scoping: b(&c["scoping"]),
         invert_x: b(&c["ix"]),
         invert_y: b(&c["iy"]),
-        // Horizon's polar spyglass look is off here: vanilla's turn, which is what the oracle
-        // plays, and no driver sends the option.
-        spyglass_polar_look: false,
-        pitch: 0.0,
+        // Vanilla's turn, which is what the oracle plays: no driver asks for a yaw scale.
+        yaw_scale: 1.0,
     };
     let (active, grabbed) = (b(&c["active"]), b(&c["grabbed"]));
     let mut handler = MouseLook::default();

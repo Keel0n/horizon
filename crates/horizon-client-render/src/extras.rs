@@ -42,7 +42,7 @@ pub struct Extras {
     /// Divide mouse turning by the zoom.
     pub zoom_sensitivity: bool,
     /// Keep a scoped look's sideways screen speed near the poles: the yaw of a spyglass turn
-    /// is scaled by `1/cos(pitch)`, capped at 8× (`mouse::spyglass_polar_yaw_scale`). Off by
+    /// is scaled by `1/cos(pitch)`, capped at 8× (`spyglass_polar_look::yaw_scale`). Off by
     /// default: vanilla turns both axes at the same rate, and the maintainer decides whether
     /// this should ever be the default.
     pub spyglass_polar_look: bool,
@@ -517,7 +517,7 @@ pub const SPLIT_THREE: [&str; 3] = ["One wide on top", "One tall on the left", "
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     /// A spyglass look keeps its sideways screen speed near the poles
-    /// (`mouse::spyglass_polar_yaw_scale`).
+    /// (`spyglass_polar_look::yaw_scale`).
     SpyglassPolarLook,
     Fullbright,
     DynamicLights,
@@ -1034,9 +1034,8 @@ mod tests {
     /// as the only axis that grows, which is why the factor is capped.
     #[test]
     fn the_polar_spyglass_look_keeps_the_sideways_screen_shift() {
-        use horizon_client_input::mouse::{
-            LookOptions, MouseLook, Rotation, SPYGLASS_POLAR_LOOK_MAX, spyglass_polar_yaw_scale,
-        };
+        use crate::spyglass_polar_look::{MAX, yaw_scale};
+        use horizon_client_input::mouse::{LookOptions, MouseLook, Rotation};
 
         const W: f64 = 1920.0;
         const H: f64 = 1080.0;
@@ -1065,8 +1064,7 @@ mod tests {
             scoping: true,
             invert_x: false,
             invert_y: false,
-            spyglass_polar_look: on,
-            pitch,
+            yaw_scale: yaw_scale(pitch, on),
         };
         let measure = |pitch: f32, look: LookOptions, d: (f64, f64)| -> Shift {
             let mut before = crate::camera::Camera::default();
@@ -1116,7 +1114,7 @@ mod tests {
         for pitch in pitches {
             let off = measure(pitch, look(pitch, false), (100.0, 0.0));
             let on = measure(pitch, look(pitch, true), (100.0, 0.0));
-            let factor = spyglass_polar_yaw_scale(pitch);
+            let factor = yaw_scale(pitch, true);
             table += &format!(
                 "{pitch} | {factor} | {:.4} | {:.4} | {:.2} | {:.2} | {:.4} | {:.4}\n",
                 off.rotation.y_rot,
@@ -1136,13 +1134,12 @@ mod tests {
                 on.forwards[2],
             );
 
-            // Off, a look built as it was before this option existed - the two new fields at
-            // their defaults - turns exactly the same way, bit for bit: the flag reads neither.
+            // Off, a look built as it was before this option existed - the scale at vanilla's
+            // 1.0 - turns exactly the same way, bit for bit.
             let legacy = measure(
                 pitch,
                 LookOptions {
-                    spyglass_polar_look: false,
-                    pitch: 0.0,
+                    yaw_scale: 1.0,
                     ..look(pitch, false)
                 },
                 (100.0, 0.0),
@@ -1181,13 +1178,13 @@ mod tests {
             }
             if pitch >= 89.9 {
                 assert!(!on.lateral_px.is_nan() && on.lateral_px.is_finite());
-                assert_eq!(factor, SPYGLASS_POLAR_LOOK_MAX, "pitch {pitch}");
+                assert_eq!(factor, MAX, "pitch {pitch}");
             }
         }
         // On, the sideways motion at 0/45/60/80 degrees is where it is at the horizon.
         let horizon = sideways[0].2;
         for (pitch, factor, px) in sideways {
-            let factor_want = if factor == SPYGLASS_POLAR_LOOK_MAX {
+            let factor_want = if factor == MAX {
                 factor
             } else {
                 1.0 / f64::from(pitch).to_radians().cos()
