@@ -756,8 +756,8 @@ impl ServerAdvancements {
         }
         let base = result["count"].as_i64().unwrap_or(1) as i32;
         let add = r["add_material_count_to_result"].as_bool().unwrap_or(false);
-        let result_items: Vec<i32> = match result["id"].as_str() {
-            Some(id) => vec![item(id)?],
+        let result_items: Vec<i32> = match horizon_world::loot::recipe_result_id(result) {
+            Some(id) => vec![item(&id)?],
             // Composite over the input's items, in the order clients get the tag.
             None => match input.as_str()? {
                 tag if tag.starts_with('#') => {
