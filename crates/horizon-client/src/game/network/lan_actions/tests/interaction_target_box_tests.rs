@@ -7,10 +7,32 @@ use horizon_client::{
 };
 use horizon_core::position::ChunkPos;
 use horizon_protocol::packets::configuration::ClientInformation;
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
+use std::sync::{Arc, Mutex, atomic::AtomicI32, mpsc};
 
-/// A server's game on the prepared resources with the chunk at the origin
-/// loaded, or None without them (CI carries no vanilla data).
+/// A mod that claims a right click and records the entity, its type and the
+/// point clicked: the listener #19010 says never hears `entity_interact`.
+struct Probe {
+    seen: Arc<Mutex<Vec<(i32, String, [f64; 3])>>>,
+}
+
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for Probe {
+    fn entity_interact_specific(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::EntityInteractSpecificEvent<'_>,
+    ) -> mod_api::Flow {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((event.entity, event.kind.to_string(), event.location));
+        mod_api::Flow::Cancel
+    }
+}
+
+/// A server's game on the prepared resources, or None without them (CI carries
+/// no vanilla data). After the data check a failure is a broken fixture, not a
+/// skipped test.
 fn server_game<'a>(
     resources: &'a mut Option<Arc<crate::game::Resources>>,
 ) -> Option<Box<Game<'a>>> {
@@ -37,8 +59,10 @@ fn server_game<'a>(
         &Progress::new(),
         &mut |_, _| unreachable!(),
     )
-    .ok()?;
-    let mut options = Options::parse(std::iter::empty()).ok()??;
+    .expect("the prepared resources load");
+    let mut options = Options::parse(std::iter::empty())
+        .expect("the default options parse")
+        .expect("the default options are there");
     options.resources = root.clone();
     options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
     let res = resources.insert(loaded.resources);
@@ -46,7 +70,7 @@ fn server_game<'a>(
         Game::new(
             res,
             loaded.pack,
-            loaded.gui?,
+            loaded.gui.expect("the resources carry a GUI state"),
             options,
             settings,
             Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
@@ -54,7 +78,7 @@ fn server_game<'a>(
             )),
             None,
         )
-        .ok()?,
+        .expect("a server game starts on the prepared resources"),
     );
     game.reset_entity_residency();
     game.native_lifecycle
@@ -64,17 +88,8 @@ fn server_game<'a>(
     Some(game)
 }
 
-/// The level's own `minecraft:interaction` is a guest's click target: the box
-/// `ServerGamePacketListenerImpl.handleInteract` measures the 3-block range
-/// from is `Interaction.makeBoundingBox` of its saved width and height, so a
-/// right click reaches `Player.interactOn` instead of being refused as an
-/// invalid target. #19010
-#[test]
-fn a_guests_click_reaches_the_levels_own_interaction() {
-    let mut resources = None;
-    let Some(mut game) = server_game(&mut resources) else {
-        return;
-    };
+/// The chunk at the origin in place, frozen, and the level open to one guest.
+fn level_at_origin(game: &mut Game<'_>) {
     game.build_registries();
     game.set_allow_commands(true);
     let stone = game
@@ -96,20 +111,25 @@ fn a_guests_click_reaches_the_levels_own_interaction() {
         .unwrap();
     assert!(game.run_command("forceload add 0 0"));
     assert!(game.run_command("tick freeze"));
-    // A 2 × 3 interaction: `Interaction.makeBoundingBox` is `x ± width / 2`,
-    // `y .. y + height`, `z ± width / 2` from its position, so its box is
-    // [-0.5, 100, -0.5] .. [1.5, 103, 1.5].
+}
+
+/// The level's own `minecraft:interaction`, summoned from `snbt` with the width
+/// and height `Interaction.makeBoundingBox` reads.
+fn summon_interaction(game: &mut Game<'_>, snbt: &str) -> i32 {
     assert!(
-        game.run_command(
-            "summon minecraft:interaction 0.5 100 0.5 {width:2f,height:3f,response:1b}"
-        )
+        game.run_command(&format!("summon minecraft:interaction {snbt}")),
+        "the interaction summons"
     );
-    let interaction = game
-        .others
+    game.others
         .iter()
         .find(|o| o.kind == "minecraft:interaction")
         .expect("the summoned interaction")
-        .id as i32;
+        .id as i32
+}
+
+/// One guest of the level open, standing at `at`, and what its connection
+/// writes back.
+fn join_guest(game: &mut Game<'_>, at: [f64; 3]) -> mpsc::Receiver<Out> {
     game.lan_host(
         super::super::lan::LanSettings {
             port: 0,
@@ -137,10 +157,9 @@ fn a_guests_click_reaches_the_levels_own_interaction() {
             level_seeds: Default::default(),
         },
     )
-    .unwrap();
-    let (tx, _rx) = mpsc::channel::<Out>();
+    .expect("the level opens to a guest");
+    let (tx, rx) = mpsc::channel::<Out>();
     let me = game.take_entity_id() as i32;
-    // Three blocks off the box's near face, inside the interaction range.
     let mut guest = Guest::new(
         Joined {
             conn: 1,
@@ -155,7 +174,7 @@ fn a_guests_click_reaches_the_levels_own_interaction() {
             expected: false,
         },
         me,
-        [0.5, 100.0, 4.5],
+        at,
         2,
     );
     guest.placed = true;
@@ -164,6 +183,27 @@ fn a_guests_click_reaches_the_levels_own_interaction() {
     guest.dimension = "minecraft:overworld".into();
     game.lan.as_mut().unwrap().hub.guests.push(guest);
     game.sync_tick_chunks();
+    rx
+}
+
+/// The level's own `minecraft:interaction` is a guest's click target: the box
+/// `ServerGamePacketListenerImpl.handleInteract` measures the 3-block range
+/// from is `Interaction.makeBoundingBox` of its saved width and height, so a
+/// right click reaches `Player.interactOn` instead of being refused as an
+/// invalid target, and the mods' `entity_interact_specific` hears it. #19010
+#[test]
+fn a_guests_click_reaches_the_levels_own_interaction() {
+    let mut resources = None;
+    let Some(mut game) = server_game(&mut resources) else {
+        return;
+    };
+    level_at_origin(&mut game);
+    // A 2 × 3 interaction: `Interaction.makeBoundingBox` is `x ± width / 2`,
+    // `y .. y + height`, `z ± width / 2` from its position, so its box is
+    // [-0.5, 100, -0.5] .. [1.5, 103, 1.5].
+    let interaction = summon_interaction(&mut game, "0.5 100 0.5 {width:2f,height:3f,response:1b}");
+    // Three blocks off the box's near face, inside the interaction range.
+    let _rx = join_guest(&mut game, [0.5, 100.0, 4.5]);
 
     let target = game.guest_target_box(0, interaction).expect("the box");
     let (lo, hi) = (
@@ -175,9 +215,77 @@ fn a_guests_click_reaches_the_levels_own_interaction() {
 
     // The packet's location is measured from the entity's position; a point on
     // the box's near face, so the click is on the interaction.
-    let used = game.guest_interact(1, 0, interaction, Hand::Main, [0.25, 1.5, 1.0]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![mod_api::ModEntry::new(
+        "probe",
+        Box::new(Probe { seen: seen.clone() }),
+    )];
+    let used = mod_platform::testing::with_mods(mods.into(), || {
+        game.guest_interact(1, 0, interaction, Hand::Main, [0.25, 1.5, 1.0])
+    });
+    assert_eq!(
+        used,
+        Ok(true),
+        "a claim is `Player.interactOn` taking the click: {used:?}"
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        *seen,
+        vec![(interaction, "minecraft:interaction".to_owned(), [
+            0.25, 1.5, 1.0
+        ])],
+        "the hook hears the clicked entity, its type and the point clicked"
+    );
+}
+
+/// The box now lets a guest's click reach `Player.attack`, which picks its
+/// target again: it must not find the mob behind the interaction.
+/// `Interaction.skipAttackInteraction` keeps the blow on the interaction, so a
+/// left click on it hurts nobody (#19010).
+#[test]
+fn a_guests_left_click_does_not_reach_the_mob_behind_the_interaction() {
+    let mut resources = None;
+    let Some(mut game) = server_game(&mut resources) else {
+        return;
+    };
+    level_at_origin(&mut game);
+    // The box is [0, 100, 2.5] .. [1, 103, 3.5], its middle [0.5, 101.5, 3.0].
+    let interaction = summon_interaction(&mut game, "0.5 100 3.0 {width:1f,height:3f,response:1b}");
+    // A pig behind the box, in the ray the server aims at the box's middle
+    // (the eye is at 101.62, the ray drops 0.12 over the 1.5 blocks): a strike
+    // that picks its target again hits it.
     assert!(
-        used.is_ok(),
-        "the click must not be refused before interactOn: {used:?}"
+        game.run_command("summon pig 0.5 101 1.9 {NoAI:1b,NoGravity:1b}"),
+        "the pig summons"
+    );
+    let pig = game
+        .mobs
+        .iter()
+        .find(|m| m.kind.id == "minecraft:pig")
+        .expect("the summoned pig")
+        .id as i32;
+    let _rx = join_guest(&mut game, [0.5, 100.0, 4.5]);
+
+    let health = |game: &Game<'_>| {
+        game.mobs
+            .iter()
+            .find(|m| m.id as i32 == pig)
+            .expect("the pig")
+            .health
+    };
+    let full = health(&game);
+    game.lan_guest_packet(1, S::Attack(play::Attack { id: interaction }));
+    assert_eq!(
+        health(&game),
+        full,
+        "a left click on the interaction hurts nobody"
+    );
+
+    // The contrast: the same guest's click on the pig itself does hurt it.
+    game.lan_guest_packet(1, S::Attack(play::Attack { id: pig }));
+    assert!(
+        health(&game) < full,
+        "the click on the pig itself lands: {} of {full} left",
+        health(&game)
     );
 }
