@@ -19,7 +19,6 @@ use horizon_core::random::{LegacyRandom, RandomSource};
 pub use loot_tags::LootTags;
 use serde_json::Value;
 use std::{
-    borrow::Cow,
     cell::RefCell,
     collections::HashMap,
     fs, io,
@@ -467,16 +466,18 @@ fn slot_range_equipment(range: &str) -> &'static [&'static str] {
 /// as written: whether such a recipe loads is the load's question, not this read's.
 /// None for a stack without an `id` and for anything else, such as the `item` key of older
 /// versions.
-pub fn recipe_result_id(result: &Value) -> Option<Cow<'_, str>> {
+pub fn recipe_result_id(result: &Value) -> Option<String> {
     let id = match result {
         Value::String(id) => id,
         Value::Object(fields) => fields.get("id")?.as_str()?,
         _ => return None,
     };
-    Some(match Identifier::parse(id) {
-        Ok(parsed) => Cow::Owned(parsed.to_string()),
-        Err(_) => Cow::Borrowed(id),
-    })
+    Some(
+        Identifier::parse(id)
+            .ok()
+            .map(|parsed| parsed.to_string())
+            .unwrap_or_else(|| id.to_owned()),
+    )
 }
 /// `LevelBasedValue.calculate`.
 pub fn level_value(v: &Value, level: i32) -> f32 {
@@ -930,7 +931,7 @@ impl LootData {
             .map(|id| &recipes[id])
             .filter(|r| r["type"] == "minecraft:smelting")
             .filter_map(|r| {
-                let result = recipe_result_id(&r["result"])?.into_owned();
+                let result = recipe_result_id(&r["result"])?.to_owned();
                 let count = r["result"]["count"].as_i64().unwrap_or(1) as i32;
                 Some((r["ingredient"].clone(), result, count))
             })

@@ -272,7 +272,7 @@ pub(super) fn validate_recipe_components(value: &Value, items: &Items) -> Result
     };
     validate(&ids, items)?;
     let conversion_error = std::cell::RefCell::new(None);
-    let parsed = WalkedIngredient::walk_resolved(
+    let parsed = WalkedIngredient::walk(
         value,
         &items.item_tag_order,
         &|_| None,
@@ -292,7 +292,6 @@ pub(super) fn validate_recipe_components(value: &Value, items: &Items) -> Result
             }
             Some(converted)
         },
-        &canonical_item_id,
     );
     if let Some(error) = conversion_error.into_inner() {
         return Err(error);

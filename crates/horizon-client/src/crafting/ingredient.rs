@@ -9,6 +9,7 @@ use super::native_hooks::native_ingredient;
 use super::{ItemStack, Items};
 use crate::native_stack_hooks::ingredient_test as native_ingredient_test;
 use display::display_stacks;
+use horizon_core::identifier::Identifier;
 use horizon_world::native_load_context::LoadContext;
 use mod_api::__private::{WalkedIngredient, dedup_keep_order, resolved_items};
 pub use mod_api::item::crafting::{IngredientRule, Shape};
@@ -30,18 +31,6 @@ fn ingredient_kind(o: &serde_json::Map<String, Value>) -> Option<&str> {
 /// A mod's own kind: a namespaced type that is not minecraft's.
 fn is_custom(kind: &str) -> bool {
     kind.contains(':') && !kind.starts_with("minecraft:")
-}
-
-/// The id an item ingredient names, as `Item.CODEC` reads one: `Identifier.parse` puts an
-/// id written without a namespace (`"stick"`, `":stick"`) in the `minecraft` namespace, and
-/// the walk then holds the name the item table knows. An id `Identifier.parse` refuses is
-/// kept as written rather than dropped: whether a malformed id loads is the load's
-/// question, and nothing here turns a loadable ingredient into a missing one.
-pub(super) fn canonical_item_id(id: &str) -> Option<String> {
-    Some(
-        horizon_core::identifier::Identifier::parse(id)
-            .map_or_else(|_| id.to_owned(), |parsed| parsed.to_string()),
-    )
 }
 
 /// A set of accepted items (expanded from an item, list or tag), and the
@@ -264,6 +253,8 @@ impl Ingredient {
         // A mod's own kind: `resolve` asked the hook once at load and left
         // the item list it matches with the occurrence; one no load
         // resolved fails the file.
+        // `Item.CODEC` reads an id through `Identifier.parse`; one it refuses is kept as
+        // written, since whether a malformed id loads is the load's question.
         let walked = WalkedIngredient::walk_resolved(
             v,
             &items.item_tag_order,
@@ -287,7 +278,12 @@ impl Ingredient {
             },
             &resolved_items,
             &components::json_patch,
-            &canonical_item_id,
+            &|id| {
+                Some(
+                    Identifier::parse(id)
+                        .map_or_else(|_| id.to_owned(), |parsed| parsed.to_string()),
+                )
+            },
         );
         let Some(walked) = walked else {
             log::error!("recipes: invalid ingredient (unresolved tag or malformed input): {v}");
