@@ -84,7 +84,8 @@ pub fn write_dat(path: &Path, tag: &Tag) -> io::Result<()> {
 }
 
 /// `bytes` written to `path` through a sibling renamed over it once whole,
-/// which is how the `.dat` and JSON files of a world are written.
+/// which is how the `.dat` and JSON files of a world are written; the sibling
+/// takes the file's own permissions, as writing in place kept them.
 fn write_via_temporary(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // A sibling written and synced, then renamed over the file: a stop or a
     // full disk leaves the old file whole, never an emptied one.
@@ -108,9 +109,16 @@ fn write_via_temporary(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if fs::symlink_metadata(&temporary).is_ok_and(|meta| meta.file_type().is_file()) {
         fs::remove_file(&temporary)?;
     }
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // A renamed sibling is created with the default mode; keep the file's own
+    // (owner-only, say), as writing in place kept it.
+    #[cfg(unix)]
+    if let Ok(meta) = fs::metadata(path) {
+        let mode = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777;
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+    }
+    let written = options
         .open(&temporary)
         .and_then(|mut file| {
             file.write_all(bytes)?;
@@ -2130,6 +2138,26 @@ mod upgrade_tests {
             parsed.get("DataVersion"),
             Some(&Json::Num(CURRENT.to_string()))
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The sibling takes the file's own permissions, so a rewritten stats file
+    /// stays owner-only instead of becoming world-readable.
+    #[cfg(unix)]
+    #[test]
+    fn a_stats_write_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("horizon-json-mode-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("player.json");
+        let old = format!(r#"{{"DataVersion":{CURRENT}}}"#);
+        fs::write(&file, old.as_bytes()).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+
+        upgrade_json(&file, Ty::Stats).unwrap();
+        let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
         let _ = fs::remove_dir_all(&dir);
     }
 
