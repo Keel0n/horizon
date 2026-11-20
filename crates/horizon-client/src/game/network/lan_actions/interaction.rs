@@ -579,6 +579,17 @@ impl Game<'_> {
         {
             return Ok(false);
         }
+        // `Interaction.skipAttackInteraction` keeps the blow on itself, and
+        // `Player.attack` for it is not ported: re-picking the crosshair here
+        // must not find a mob behind the interaction's box (#19010).
+        if let Ok(id) = u32::try_from(id)
+            && self
+                .others
+                .iter()
+                .any(|o| o.id == id && o.interaction.is_some())
+        {
+            return Ok(false);
+        }
         if let Some(victim) = self.pvp_victim(conn, id) {
             if let Ok(Some(strike)) = self.as_guest_at(gi, conn, |g| g.pvp_strike(id as u32))
                 && self.pvp_land(victim, &strike)
