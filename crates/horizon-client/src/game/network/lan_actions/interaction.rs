@@ -192,10 +192,6 @@ impl Game<'_> {
         }
     }
 
-    /// `Level.getEntityOrPart(id).getBoundingBox()` for a guest's attack or
-    /// interaction: the host, another player, a mob, a vehicle or object, a
-    /// dragon part or crystal, a projectile. None for an id the level doesn't
-    /// have (the handlers then find nothing either).
     /// `WorldBorder.isWithinBounds(target.blockPosition())` for an entity of this box:
     /// the block its feet are in (the box's bottom centre).
     pub(super) fn inside_border(&self, target: &Aabb) -> bool {
@@ -203,6 +199,11 @@ impl Game<'_> {
         self.border.contains(feet.x.floor(), feet.z.floor())
     }
 
+    /// `Level.getEntityOrPart(id).getBoundingBox()` for a guest's attack or
+    /// interaction: the host, another player, a mob, a vehicle or object (a boat,
+    /// a minecart, an armour stand, an item frame, a painting or the level's own
+    /// `minecraft:interaction`), a dragon part or crystal, a projectile. None for
+    /// an id the level doesn't have (the handlers then find nothing either).
     pub(in crate::game) fn guest_target_box(&self, gi: usize, id: i32) -> Option<Aabb> {
         let host = self.lan.as_ref()?;
         let conn = host.hub.guests[gi].conn;
