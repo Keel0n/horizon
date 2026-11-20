@@ -231,9 +231,11 @@ fn a_guests_click_reaches_the_levels_own_interaction() {
     let seen = seen.lock().unwrap();
     assert_eq!(
         *seen,
-        vec![(interaction, "minecraft:interaction".to_owned(), [
-            0.25, 1.5, 1.0
-        ])],
+        vec![(
+            interaction,
+            "minecraft:interaction".to_owned(),
+            [0.25, 1.5, 1.0]
+        )],
         "the hook hears the clicked entity, its type and the point clicked"
     );
 }
