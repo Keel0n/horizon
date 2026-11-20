@@ -2221,6 +2221,39 @@ mod upgrade_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A linked stats file is written where the link points, as before: the
+    /// link stays a link and no temporary is left beside it.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_stats_file_is_written_through() {
+        let dir = std::env::temp_dir().join(format!("horizon-json-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("real")).unwrap();
+        let real = dir.join("real/player.json");
+        let before = format!("{{ \"DataVersion\": {CURRENT} }}");
+        fs::write(&real, before.as_bytes()).unwrap();
+        let link = dir.join("player.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        upgrade_json(&link, Ty::Stats).unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let after = fs::read_to_string(&real).unwrap();
+        assert_ne!(after, before);
+        let units: Vec<u16> = after.encode_utf16().collect();
+        let parsed = json::parse_lenient(&units).expect("the upgraded file parses");
+        assert_eq!(
+            parsed.get("DataVersion"),
+            Some(&Json::Num(CURRENT.to_string()))
+        );
+        assert!(!dir.join("player.json.horizon-new").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// The upgrader reads chunks and `.dat` files as the game loads them: past
     /// the default node cap, within the saved-data limits.
     #[test]
