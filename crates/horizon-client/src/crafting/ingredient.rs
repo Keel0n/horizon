@@ -9,7 +9,7 @@ use super::native_hooks::native_ingredient;
 use super::{ItemStack, Items};
 use crate::native_stack_hooks::ingredient_test as native_ingredient_test;
 use display::display_stacks;
-use horizon_core::identifier::Identifier;
+use horizon_core::identifier::parse_or_keep;
 use horizon_world::native_load_context::LoadContext;
 use mod_api::__private::{WalkedIngredient, dedup_keep_order, resolved_items};
 pub use mod_api::item::crafting::{IngredientRule, Shape};
@@ -278,12 +278,7 @@ impl Ingredient {
             },
             &resolved_items,
             &components::json_patch,
-            &|id| {
-                Some(
-                    Identifier::parse(id)
-                        .map_or_else(|_| id.to_owned(), |parsed| parsed.to_string()),
-                )
-            },
+            &|id| Some(parse_or_keep(id)),
         );
         let Some(walked) = walked else {
             log::error!("recipes: invalid ingredient (unresolved tag or malformed input): {v}");

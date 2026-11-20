@@ -8,6 +8,7 @@ use crate::{
     advancements::{Progress, Tree},
     recipe_book::{Category, RecipeIndex, Settings, crafting_category, crafting_station},
 };
+use horizon_core::identifier::parse_or_keep;
 use horizon_protocol::buf::{Codec, Writer};
 use serde_json::Value;
 use std::{
@@ -772,7 +773,7 @@ impl ServerAdvancements {
                         .ids
                         .clone()
                 }
-                one => vec![item(one)?],
+                one => vec![item(&parse_or_keep(one))?],
             },
         };
         let (shapeless, tag, empty_stack) = (
@@ -893,13 +894,14 @@ fn shrink(rows: &[Value]) -> Vec<Vec<char>> {
 
 /// ByteBufCodecs.holderSet for an ingredient: a tag by name, or the items.
 /// An item the registries do not know is left out, not sent as id 0.
+/// `Item.CODEC` reads an id before that lookup; a tag's name stays as written.
 fn holder_set(w: &mut Writer, v: &Value, item: &dyn Fn(&str) -> Option<i32>) {
     match v {
         Value::String(s) if s.starts_with('#') => {
             w.varint(0);
             w.string(&s[1..]);
         }
-        Value::String(s) => match item(s) {
+        Value::String(s) => match item(&parse_or_keep(s)) {
             Some(id) => {
                 w.varint(2);
                 w.varint(id);
@@ -907,7 +909,10 @@ fn holder_set(w: &mut Writer, v: &Value, item: &dyn Fn(&str) -> Option<i32>) {
             None => w.varint(1),
         },
         Value::Array(a) => {
-            let ids: Vec<i32> = a.iter().filter_map(|s| item(s.as_str()?)).collect();
+            let ids: Vec<i32> = a
+                .iter()
+                .filter_map(|s| item(&parse_or_keep(s.as_str()?)))
+                .collect();
             w.varint(ids.len() as i32 + 1);
             for id in ids {
                 w.varint(id);
@@ -1248,6 +1253,30 @@ mod tests {
             }
             other => panic!("not an item list: {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An ingredient's id is read as `Item.CODEC` reads one, before the registry lookup.
+    #[test]
+    fn an_ingredient_id_is_read_before_the_item_lookup() {
+        let bare = r#"{"type":"minecraft:crafting_shapeless","ingredients":["raw_copper"],"result":{"id":"minecraft:copper_ingot"}}"#;
+        let tag = r##"{"type":"minecraft:crafting_shapeless","ingredients":["#minecraft:dyes"],"result":{"id":"minecraft:copper_ingot"}}"##;
+        let unknown = r#"{"type":"minecraft:crafting_shapeless","ingredients":["Stick"],"result":{"id":"minecraft:copper_ingot"}}"#;
+        let root = resources(
+            "ingredient_id",
+            &[("bare", bare), ("tag", tag), ("unknown", unknown)],
+        );
+        let (sync, e) = entry(&root, "minecraft:bare");
+        let copper = sync.id("minecraft:item", "minecraft:raw_copper").unwrap();
+        assert_eq!(e.requirements, Some(vec![HolderSet::Items(vec![copper])]));
+        // A `#`-tag keeps its name; an id no registry entry has still names no item.
+        let (_, e) = entry(&root, "minecraft:tag");
+        assert_eq!(
+            e.requirements,
+            Some(vec![HolderSet::Tag("minecraft:dyes".into())])
+        );
+        let (_, e) = entry(&root, "minecraft:unknown");
+        assert_eq!(e.requirements, Some(vec![HolderSet::Items(Vec::new())]));
         let _ = std::fs::remove_dir_all(&root);
     }
 

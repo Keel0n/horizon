@@ -27,7 +27,7 @@ use std::{
 };
 use {
     crate::{lazy_json::LazyJson, native_load_context::LoadContext},
-    horizon_core::{identifier::Identifier, nbt::Tag},
+    horizon_core::{identifier::parse_or_keep, nbt::Tag},
 };
 
 /// Raw files a world's data packs add over the game's own data, by
@@ -472,12 +472,7 @@ pub fn recipe_result_id(result: &Value) -> Option<String> {
         Value::Object(fields) => fields.get("id")?.as_str()?,
         _ => return None,
     };
-    Some(
-        Identifier::parse(id)
-            .ok()
-            .map(|parsed| parsed.to_string())
-            .unwrap_or_else(|| id.to_owned()),
-    )
+    Some(parse_or_keep(id))
 }
 /// `LevelBasedValue.calculate`.
 pub fn level_value(v: &Value, level: i32) -> f32 {
