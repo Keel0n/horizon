@@ -29,11 +29,16 @@ pub fn yaw_scale(pitch: f32, enabled: bool) -> f64 {
 mod tests {
     use super::*;
 
-    /// On, the scale is exactly `1/|cos(pitch)|` where that is below the cap.
+    /// On, the scale is `1/|cos(pitch)|`: the sidelong screen shift a yaw turn of `d` degrees
+    /// makes is `d·cos(pitch)`, so this is how much faster the turn has to be to keep it.
     #[test]
     fn the_scale_is_one_over_cos_below_the_cap() {
-        for pitch in [0.0f32, 45.0, 60.0, 80.0] {
-            let want = 1.0 / f64::from(pitch).to_radians().cos().abs();
+        for (pitch, want) in [
+            (0.0f32, 1.0),
+            (45.0, std::f64::consts::SQRT_2),
+            (60.0, 2.0),
+            (80.0, 5.758770483143634),
+        ] {
             assert!(want < MAX, "pitch {pitch} is below the cap: {want}");
             let got = yaw_scale(pitch, true);
             assert!(

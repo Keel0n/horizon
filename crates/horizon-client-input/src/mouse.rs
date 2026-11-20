@@ -480,33 +480,6 @@ mod tests {
         }
     }
 
-    /// The scale is an extension point that works: a turn asked for in degrees comes back
-    /// as that turn, the reciprocal in `motion_for_turn` undoing the one in `turn_player`.
-    #[test]
-    fn motion_for_turn_inverts_turn_player_at_any_yaw_scale() {
-        for yaw_scale in [1.0, 8.0] {
-            let o = LookOptions {
-                scoping: true,
-                yaw_scale,
-                ..PLAIN
-            };
-            let (dx, dy) = motion_for_turn(73.5, -21.25, o);
-            let mut look = MouseLook::default();
-            let mut rot = rotation();
-            frame(&mut look, &mut rot, 1.0, (dx, dy), o);
-            assert!(
-                (rot.y_rot - 73.5).abs() < 1e-3,
-                "yaw_scale {yaw_scale}: {}",
-                rot.y_rot
-            );
-            assert!(
-                (rot.x_rot + 21.25).abs() < 1e-3,
-                "yaw_scale {yaw_scale}: {}",
-                rot.x_rot
-            );
-        }
-    }
-
     #[test]
     fn motion_for_turn_round_trips_through_turn_player() {
         for o in [
@@ -519,6 +492,14 @@ mod tests {
             },
             LookOptions {
                 scoping: true,
+                ..PLAIN
+            },
+            // The scale is an extension point that works: a scoped turn asked for in degrees
+            // comes back as that turn at 8×, the reciprocal in `motion_for_turn` undoing the
+            // one in `turn_player`.
+            LookOptions {
+                scoping: true,
+                yaw_scale: 8.0,
                 ..PLAIN
             },
         ] {
