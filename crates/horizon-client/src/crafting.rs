@@ -97,7 +97,7 @@ impl Template {
         let components = v.get("components").map(json_tag);
         let (damage, extra) = crate::item_data::decode_components(components.as_ref());
         Some(Self {
-            item: horizon_world::loot::recipe_result_id(v).map(Arc::from),
+            item: horizon_world::loot::recipe_result_id(v).map(|id| Arc::from(&*id)),
             count: template_count(v)?,
             damage,
             extra,

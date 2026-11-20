@@ -5,7 +5,7 @@ use super::*;
 fn a_result_is_an_object_with_an_id_or_a_bare_item_id() {
     let id = |json: &str| {
         let v: Value = serde_json::from_str(json).unwrap();
-        recipe_result_id(&v).map(str::to_owned)
+        recipe_result_id(&v).map(|id| id.into_owned())
     };
     assert_eq!(
         id(r#"{"id": "ruby:ruby", "count": 3}"#).as_deref(),
@@ -19,4 +19,27 @@ fn a_result_is_an_object_with_an_id_or_a_bare_item_id() {
     assert_eq!(id(r#"{"id": 7}"#), None);
     assert_eq!(id("null"), None);
     assert_eq!(id("[]"), None);
+}
+
+/// `Item.CODEC` reads an item id through `Identifier.CODEC`, whose `Identifier.parse` puts a
+/// bare id and an id with a leading colon in the `minecraft` namespace.
+#[test]
+fn an_item_id_written_without_a_namespace_names_minecraft() {
+    let id = |json: &str| {
+        let v: Value = serde_json::from_str(json).unwrap();
+        recipe_result_id(&v).map(|id| id.into_owned())
+    };
+    for written in ["stick", ":stick", "minecraft:stick"] {
+        let bare = format!("\"{written}\"");
+        let in_object = format!(r#"{{"id": "{written}", "count": 3}}"#);
+        assert_eq!(id(&bare).as_deref(), Some("minecraft:stick"), "{bare}");
+        assert_eq!(
+            id(&in_object).as_deref(),
+            Some("minecraft:stick"),
+            "{in_object}"
+        );
+    }
+    // An id `Identifier.parse` refuses is handed on as written: a malformed id is the
+    // load's business, and this read must not change which recipes load.
+    assert_eq!(id(r#""Stick""#).as_deref(), Some("Stick"));
 }

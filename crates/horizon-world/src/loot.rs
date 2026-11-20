@@ -19,6 +19,7 @@ use horizon_core::random::{LegacyRandom, RandomSource};
 pub use loot_tags::LootTags;
 use serde_json::Value;
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::HashMap,
     fs, io,
@@ -27,7 +28,7 @@ use std::{
 };
 use {
     crate::{lazy_json::LazyJson, native_load_context::LoadContext},
-    horizon_core::nbt::Tag,
+    horizon_core::{identifier::Identifier, nbt::Tag},
 };
 
 /// Raw files a world's data packs add over the game's own data, by
@@ -459,14 +460,23 @@ fn slot_range_equipment(range: &str) -> &'static [&'static str] {
 /// The item a recipe's `result` names. `ItemStackTemplate.CODEC` and `TransmuteResult.CODEC`
 /// read a stack's fields (`id`, `count`, `components`) or, as their alternative, a bare item id
 /// (`Item.CODEC`): `"result": {"id": "mod:item"}` and `"result": "mod:item"` are the same item.
+/// `Item.CODEC` reads the id through `Identifier.CODEC`, which is `Identifier.parse`: an id
+/// written without a namespace (`"stick"`, `":stick"`) names `minecraft:stick`. The id is
+/// canonical here, where the parse boundary is, so everything downstream that compares or sends
+/// it already holds the name the item table knows. An id `Identifier.parse` refuses is returned
+/// as written: whether such a recipe loads is the load's question, not this read's.
 /// None for a stack without an `id` and for anything else, such as the `item` key of older
 /// versions.
-pub fn recipe_result_id(result: &Value) -> Option<&str> {
-    match result {
-        Value::String(id) => Some(id),
-        Value::Object(fields) => fields.get("id")?.as_str(),
-        _ => None,
-    }
+pub fn recipe_result_id(result: &Value) -> Option<Cow<'_, str>> {
+    let id = match result {
+        Value::String(id) => id,
+        Value::Object(fields) => fields.get("id")?.as_str()?,
+        _ => return None,
+    };
+    Some(match Identifier::parse(id) {
+        Ok(parsed) => Cow::Owned(parsed.to_string()),
+        Err(_) => Cow::Borrowed(id),
+    })
 }
 /// `LevelBasedValue.calculate`.
 pub fn level_value(v: &Value, level: i32) -> f32 {
@@ -920,7 +930,7 @@ impl LootData {
             .map(|id| &recipes[id])
             .filter(|r| r["type"] == "minecraft:smelting")
             .filter_map(|r| {
-                let result = recipe_result_id(&r["result"])?.to_owned();
+                let result = recipe_result_id(&r["result"])?.into_owned();
                 let count = r["result"]["count"].as_i64().unwrap_or(1) as i32;
                 Some((r["ingredient"].clone(), result, count))
             })

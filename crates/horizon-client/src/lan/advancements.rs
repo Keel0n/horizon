@@ -553,13 +553,9 @@ impl ServerAdvancements {
         };
         // The result as its ItemStackSlotDisplay, the station as its item.
         let result = |w: &mut Writer| {
+            let id = horizon_world::loot::recipe_result_id(&r["result"]);
             w.varint(slot("minecraft:item_stack"));
-            w.varint(
-                item(
-                    horizon_world::loot::recipe_result_id(&r["result"]).unwrap_or("minecraft:air"),
-                )
-                .unwrap_or(0),
-            );
+            w.varint(item(id.as_deref().unwrap_or("minecraft:air")).unwrap_or(0));
             w.varint(r["result"]["count"].as_i64().unwrap_or(1) as i32);
             w.varint(0);
             w.varint(0);

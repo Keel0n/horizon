@@ -315,10 +315,8 @@ pub fn update_recipes(
             None => w.varint(1),
         }
         w.varint(item_stack);
-        w.varint(
-            item(horizon_world::loot::recipe_result_id(&r["result"]).unwrap_or("minecraft:air"))
-                .unwrap_or(0),
-        );
+        let result = horizon_world::loot::recipe_result_id(&r["result"]);
+        w.varint(item(result.as_deref().unwrap_or("minecraft:air")).unwrap_or(0));
         w.varint(r["result"]["count"].as_i64().unwrap_or(1) as i32);
         w.varint(0); // no components added
         w.varint(0); // nor removed
