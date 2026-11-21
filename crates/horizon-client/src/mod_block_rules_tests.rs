@@ -10,9 +10,10 @@ use std::{
 };
 
 /// The vanilla data plus a content mod whose blocks copy templates only: a
-/// chest, a shulker box, an anvil and a stone block whose id ends in a vanilla
-/// chest's name. `None` without the prepared vanilla data (CI).
-fn resources() -> Option<&'static Path> {
+        /// chest, a barrel, a hopper, a dispenser, a shulker box, an anvil and a
+        /// stone block whose id ends in a vanilla chest's name. `None` without the
+        /// prepared vanilla data (CI).
+        fn resources() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
         let base =
@@ -28,6 +29,9 @@ fn resources() -> Option<&'static Path> {
         )];
         for (id, template) in [
             ("crate_of_stuff", "chest"),
+            ("crate", "barrel"),
+            ("chute", "hopper"),
+            ("trap", "dispenser"),
             ("lockbox", "shulker_box"),
             ("hammer", "anvil"),
             ("fake_copper_chest", "stone"),
@@ -98,6 +102,38 @@ fn a_content_blocks_rules_come_from_its_template_and_never_from_its_id() {
         pre_remove(&behaviours, state("fieldtest:fake_copper_chest")),
         PreRemove::Nothing
     );
+    // A barrel's, a hopper's and a dispenser's slots drop by the block entity's
+    // class, so a content block of each template keeps its contents.
+    for (block, dropped) in [
+        ("fieldtest:crate", contents(27)),
+        ("fieldtest:chute", contents(5)),
+        ("fieldtest:trap", contents(9)),
+        ("minecraft:barrel", contents(27)),
+        ("minecraft:hopper", contents(5)),
+        ("minecraft:dispenser", contents(9)),
+        ("minecraft:dropper", contents(9)),
+        ("minecraft:crafter", contents(9)),
+        ("minecraft:brewing_stand", contents(5)),
+        ("minecraft:chiseled_bookshelf", contents(6)),
+        ("minecraft:oak_shelf", contents(3)),
+        ("minecraft:decorated_pot", contents(1)),
+        ("minecraft:bookshelf", PreRemove::Nothing),
+        (
+            "minecraft:furnace",
+            PreRemove::Contents {
+                slots: 3,
+                furnace: true,
+            },
+        ),
+        ("minecraft:campfire", PreRemove::Campfire),
+        ("minecraft:jukebox", PreRemove::Jukebox),
+        ("minecraft:lectern", PreRemove::Lectern),
+        ("minecraft:sculk_shrieker", PreRemove::SculkShrieker),
+        ("minecraft:creaking_heart", PreRemove::CreakingHeart),
+        ("minecraft:beacon", PreRemove::Beacon),
+    ] {
+        assert_eq!(pre_remove(&behaviours, state(block)), dropped, "{block}");
+    }
     // A falling anvil's damage source asks the class, its saved `HurtEntities`
     // default and its wear ask the tag: vanilla's three anvils answer both, and
     // a content block of the anvil template is only the class until it adds
