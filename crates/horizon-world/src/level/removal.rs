@@ -35,7 +35,10 @@ pub enum PreRemove {
 /// vanilla runs that entity's own `preRemoveSideEffects`, so a
 /// `ShulkerBoxBlockEntity` keeps its contents and a block whose id only ends in
 /// a shulker box's name is not a shulker box at all.
-pub fn pre_remove(behaviours: &super::Behaviours, state: crate::registry::BlockStateId) -> PreRemove {
+pub fn pre_remove(
+    behaviours: &super::Behaviours,
+    state: crate::registry::BlockStateId,
+) -> PreRemove {
     let class = behaviours.data(state);
     if class.is(super::classes::Class::ShulkerBox) {
         return PreRemove::ShulkerBox;

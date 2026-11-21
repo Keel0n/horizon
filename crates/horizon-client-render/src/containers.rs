@@ -1023,8 +1023,16 @@ mod tests {
     #[test]
     fn a_container_is_recognised_by_its_block_entity_type_not_by_its_suffix() {
         for (block, name_key, menu) in [
-            ("minecraft:chest", "container.chest", "minecraft:generic_9x3"),
-            ("minecraft:oxidized_copper_chest", "container.chest", "minecraft:generic_9x3"),
+            (
+                "minecraft:chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
+            (
+                "minecraft:oxidized_copper_chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
             (
                 "minecraft:waxed_weathered_copper_chest",
                 "container.chest",
