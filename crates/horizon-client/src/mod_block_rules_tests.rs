@@ -102,7 +102,11 @@ fn a_content_blocks_rules_come_from_its_template_and_never_from_its_id() {
     // default and its wear ask the tag: vanilla's three anvils answer both, and
     // a content block of the anvil template is only the class until it adds
     // itself to `minecraft:anvil`.
-    for anvil in ["minecraft:anvil", "minecraft:chipped_anvil", "minecraft:damaged_anvil"] {
+    for anvil in [
+        "minecraft:anvil",
+        "minecraft:chipped_anvil",
+        "minecraft:damaged_anvil",
+    ] {
         assert!(behaviours.is_anvil(state(anvil)), "{anvil}");
         assert!(behaviours.is_anvil_tag(state(anvil)), "{anvil}");
     }
