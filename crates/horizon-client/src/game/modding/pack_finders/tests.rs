@@ -707,3 +707,29 @@ fn a_replaced_package_the_package_checks_refuse_is_not_mounted() {
     assert!(reloaded.add_pack_finders(registration()).is_err());
     assert!(reloaded.packs.is_empty());
 }
+
+/// A file put in a package's place is refused before it is mounted when its manifest names another
+/// mod: the package itself passes the checks, so only the id the location names can refuse it.
+#[test]
+fn a_replaced_package_that_names_another_mod_is_not_mounted() {
+    let mut fixture = Fixture::new(true);
+    let sources = fixture.sources();
+    let manifest = fixture
+        .files
+        .iter_mut()
+        .find(|(name, _)| name == "horizon-mod.toml")
+        .unwrap();
+    manifest.1 = b"id='thief'\nname='Pack mod'\nversion='1'\napi='0.2'\ncapabilities=['registries']\nnamespaces=['packmod']\n"
+        .to_vec();
+    fixture.publish();
+    // A valid package, declaring the namespace its files sit in: only its id tells it apart.
+    assert!(horizon_mod_package::Package::read(&fixture.package).is_ok());
+    let mut reloaded = Registry::new(PackType::ServerData, sources);
+    let found = reloaded.add_pack_finders(PackRegistration::new(
+        Identifier::parse(&format!("packmod:{DATA_PACK}")).unwrap(),
+        PackType::ServerData,
+        mod_api::Text::translate("packmod.optional.title", vec![]),
+    ));
+    assert!(found.is_err());
+    assert!(reloaded.packs.is_empty());
+}
