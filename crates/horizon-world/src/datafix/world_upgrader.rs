@@ -491,19 +491,27 @@ fn resolve_recreate_directory(folder: &Path) -> PathBuf {
     folder.with_file_name(format!("{NEW_DIRECTORY_PREFIX}{name}"))
 }
 
-/// Cuts a staging folder that resolves to the live one loose, once per
-/// folder, before anything is removed or opened in it: a `new_entities` that
-/// is a link to `entities` would be written through, the leftover removal of
-/// `try_process_one_position` deleting the live region file before its
-/// rewrite starts, so a cancel or a write failure leaves the world without
-/// the region or with a partial copy. Only the link itself goes — on Windows
-/// `remove_dir` takes a junction or a directory symlink, never its target —
-/// and the writer's `create_dir_all` makes the real folder. Returns whether
-/// the staging folder is safe to write into.
+/// Removes a staging folder that is a link, once per folder, before
+/// anything is removed or opened in it: writing through any link puts the
+/// staging files into someone else's folder, and a `new_entities` linked to
+/// `entities` would have the leftover removal of `try_process_one_position`
+/// delete the live region file before its rewrite starts, so a cancel or a
+/// write failure leaves the world without the region or with a partial
+/// copy. Only the link itself goes — on Windows `remove_dir` takes a
+/// junction or a directory symlink, never its target — and the writer's
+/// `create_dir_all` makes the real folder. Returns whether the staging
+/// folder is safe to write into.
 fn detach_aliased_recreate_directory(region_folder: &Path) -> bool {
     let staging = resolve_recreate_directory(region_folder);
     let aliased = match fs::symlink_metadata(&staging) {
-        Err(_) => return true,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return true,
+        Err(e) => {
+            eprintln!(
+                "Not writing through staging folder {}: its metadata is unreadable: {e}",
+                staging.display()
+            );
+            return false;
+        }
         Ok(meta) if meta.file_type().is_symlink() => true,
         Ok(meta) if meta.is_dir() => matches!(
             (fs::canonicalize(&staging), fs::canonicalize(region_folder)),

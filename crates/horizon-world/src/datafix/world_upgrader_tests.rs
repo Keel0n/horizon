@@ -695,3 +695,36 @@ fn an_aliased_staging_folder_keeps_the_live_region() {
     }
     assert!(!staging.exists(), "the aliased staging path stayed");
 }
+
+/// A live folder that is itself a link makes its staging folder — a real
+/// one holding the region files — canonicalize to it: it is not a link and
+/// not empty, so neither `remove_dir` nor `remove_file` takes it and the
+/// folder stays out of the run. Closing the run must not remove it either.
+#[test]
+fn a_staging_folder_that_is_the_live_one_is_left_alone() {
+    let world = TempWorld::new("staging-is-live");
+    let live = world.folder(OVERWORLD, "entities");
+    let staging = resolve_recreate_directory(&live);
+    let positions: Vec<ChunkPos> = (0..3).map(|x| ChunkPos::new(x, 0)).collect();
+    let chunks: Vec<(ChunkPos, Tag)> = positions
+        .iter()
+        .map(|pos| (*pos, entity_chunk(4000, pos.x, pos.z)))
+        .collect();
+    write_chunks(&staging.join("r.0.0.mca"), &chunks);
+    if let Err(e) = link_dir(&live, &staging) {
+        eprintln!("a_staging_folder_that_is_the_live_one_is_left_alone: cannot create the link: {e}");
+        return;
+    }
+
+    let progress = run(&world, false, true);
+
+    assert!(progress.is_finished());
+    for pos in &positions {
+        assert_eq!(
+            version_of(&live.join("r.0.0.mca"), *pos),
+            4000,
+            "the run rewrote chunk {pos:?} of a folder it had to leave alone"
+        );
+    }
+    assert!(staging.exists(), "closing removed the real staging folder");
+}
