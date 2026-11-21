@@ -8,7 +8,10 @@ use loading_screen::{
     App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
 };
 use motion_ids::{motion_at, motion_block_entity};
-use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
+use resource_load::{
+    Progress, launch_world, load_resources, named_scope, owns_device_loss_marker,
+    synchronous_startup,
+};
 /// The content tables the world plays with, as field-level borrows: the
 /// world's data packs' over the game's own. The `Game::items`/`recipes`/
 /// `stations` methods read the same tables, but taking `&self` blocks a
@@ -122,6 +125,7 @@ use resource_loader::{
     EntityModels, GameCpuResources, Loaded, LoaderMsg, PendingWorldEntry, WorldRestLoader,
     run_loading, write_report,
 };
+use window_handler::ClientQuit;
 // `Action` here is the title screen's buttons (`title::Action`).
 use self::api_values::TryIntoApi;
 pub(crate) use api_values::{block_jump_factor, block_speed_factor, is_ladder};
@@ -1152,6 +1156,8 @@ struct Game<'a> {
     renderer: Option<Renderer>,
     /// Avoid an endless rebuild loop if the new device is lost as well.
     last_device_recovery: Option<Instant>,
+    /// Whether this run wrote a device-loss marker, and when it may go (`gfx::safe_start`).
+    safe_start_proof: horizon_client::gfx::safe_start::Proof,
     /// CPU geometry storage retained across frames, including empty/title frames.
     entity_vertices: Vec<Vertex>,
     /// Horizon Extras' dynamic lights this frame (`dynamic_lights.rs`), and how brightly each
@@ -1846,6 +1852,8 @@ struct Game<'a> {
     text_selection: horizon_client::clipboard::AppendSelection,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
+    /// A mod's read-only screen hook can queue the primary client's quit.
+    client_quit: std::cell::Cell<ClientQuit>,
     pending_save: Option<saving::ClosingSave>,
     /// Scheduled end of the server tick (`MinecraftServer.haveTime`).
     server_tick_deadline: Option<Instant>,
@@ -7202,6 +7210,16 @@ impl Game<'_> {
         if self.options.paced_by_split {
             return Err("the graphics device was lost during split-screen play".into());
         }
+        // Before anything that can fail or panic on the lost device: the next start finds it
+        // unless this run proves healthy (`gfx::safe_start`).
+        if owns_device_loss_marker(&self.options)
+            && let Some(renderer) = &self.renderer
+            && renderer.mark_device_lost(
+                &Self::options_path().with_file_name(horizon_client::gfx::safe_start::MARKER),
+            )
+        {
+            self.safe_start_proof.lost();
+        }
         let now = Instant::now();
         if self
             .last_device_recovery
@@ -7251,6 +7269,7 @@ impl Game<'_> {
         )?;
         (renderer.screenshot, renderer.screenshot_result) = (screenshot, screenshot_result);
         self.adopt_renderer(renderer);
+        self.safe_start_proof.recovered(Instant::now());
         log::info!("Horizon: graphics device recovered; rebuilding world meshes");
         Ok(())
     }
@@ -7854,6 +7873,9 @@ impl Game<'_> {
             result => result?,
         };
         self.finish_render_frame(elapsed);
+        if rendered && self.safe_start_proof.presented(Instant::now()) {
+            horizon_client::gfx::safe_start::clear(&Self::options_path());
+        }
         if rendered {
             // The submit thread may still hold the frame: a listener hears it after the
             // present, and with none the next frame keeps overlapping it.
@@ -9032,6 +9054,7 @@ impl Game<'_> {
                         return;
                     }
                     self.pending_save.as_mut().unwrap().quit = true;
+                    self.client_quit.set(ClientQuit::ShuttingDown);
                 }
                 WindowEvent::Focused(focused) => {
                     self.focused = focused;
@@ -10305,6 +10328,7 @@ impl Game<'_> {
                                 .world_frames
                                 .is_some_and(|f| self.world_frames >= f)
                         {
+                            self.client_quit.set(ClientQuit::ShuttingDown);
                             event_loop.exit();
                         }
                     }
@@ -10545,6 +10569,7 @@ impl<'a> Game<'a> {
             resize_state: None,
             renderer: None,
             last_device_recovery: None,
+            safe_start_proof: Default::default(),
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
             luminance: Default::default(),
@@ -10931,6 +10956,7 @@ impl<'a> Game<'a> {
             user_input: Default::default(),
             text_selection: Default::default(),
             saved_for_exit: false,
+            client_quit: std::cell::Cell::new(ClientQuit::Running),
             pending_save: None,
             server_tick_deadline: None,
             frame_drawn: true,
@@ -11133,7 +11159,16 @@ pub(crate) fn run_with(
         }
         return Err(error.into());
     }
+    // A window's start takes the last one's graphics device loss into its settings
+    // (`gfx::safe_start`); held in memory too, for a hold its settings file didn't keep.
+    let device_loss_hold = Game::options_path()
+        .parent()
+        .filter(|_| owns_device_loss_marker(&options))
+        .and_then(horizon_client::gfx::safe_start::take);
     let mut early_settings = Settings::load(&Game::options_path());
+    if device_loss_hold.is_some() {
+        early_settings.horizon.safe_start = device_loss_hold;
+    }
     options
         .mods
         .capture_code_switches(&early_settings.mods.disabled);
