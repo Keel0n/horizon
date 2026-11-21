@@ -1446,10 +1446,12 @@ fn a_falling_anvil_carries_its_distance_damage_and_sand_does_not() {
     let mut w = world!();
     let anvil = w.id("anvil", &[("facing", "north")]);
     let sand = w.id("sand", &[]);
-    w.put(BlockPos::new(0, 5, 0), anvil);
-    w.put(BlockPos::new(2, 5, 0), sand);
-    w.tick();
-    let hurt = |state| {
+    // `set` is the path the game takes: it runs the neighbour update that
+    // schedules `FallingBlock.tick` (`Class::FallingBlock`, two ticks later).
+    // `put` only writes the state, and nothing ever falls.
+    w.set(BlockPos::new(0, 5, 0), anvil);
+    w.set(BlockPos::new(2, 5, 0), sand);
+    let hurt = |w: &World, state| {
         w.level.events.iter().find_map(|e| match e {
             LevelEvent::FallingBlock {
                 state: s,
@@ -1459,8 +1461,14 @@ fn a_falling_anvil_carries_its_distance_damage_and_sand_does_not() {
             _ => None,
         })
     };
-    assert_eq!(hurt(anvil), Some(Some(2.0)));
-    assert_eq!(hurt(sand), Some(None));
+    for _ in 0..4 {
+        if hurt(&w, anvil).is_some() && hurt(&w, sand).is_some() {
+            break;
+        }
+        w.tick();
+    }
+    assert_eq!(hurt(&w, anvil), Some(Some(2.0)));
+    assert_eq!(hurt(&w, sand), Some(None));
 }
 
 #[test]
