@@ -12,6 +12,13 @@ pub(in crate::gfx) fn on(device: &wgpu::Device) -> bool {
     device.features().contains(RAY_QUERY)
 }
 
+impl crate::gfx::Renderer {
+    /// Whether the device traces rays (`on`): a pack's ray-only data is worth building.
+    pub fn ray_queries(&self) -> bool {
+        on(&self.device)
+    }
+}
+
 /// What buffers that BLAS builds read (the quad indices) need on top of their own usage:
 /// nothing without ray queries, so the off path's buffers are main's.
 pub(in crate::gfx) fn blas_input(device: &wgpu::Device) -> wgpu::BufferUsages {
@@ -43,12 +50,7 @@ const QUAD_INDICES: &str = "Quad indices";
 /// caller leaves the draw it was for out, or reports the loss, rather than the render
 /// thread dying.
 pub(in crate::gfx) fn quad_indices(device: &wgpu::Device, quads: u32) -> Option<wgpu::Buffer> {
-    let indices: Vec<u32> = (0..quads)
-        .flat_map(|q| {
-            let b = q * 4;
-            [b, b + 1, b + 2, b, b + 2, b + 3]
-        })
-        .collect();
+    let indices = quad_index_data(quads);
     // The scopes hold what the device made of the creation: outside them wgpu reports an
     // invalid buffer as an uncaptured error, which panics.
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -67,6 +69,34 @@ pub(in crate::gfx) fn quad_indices(device: &wgpu::Device, quads: u32) -> Option<
             None
         }
     }
+}
+
+/// `quad_indices` for a frame that grows them (#13624): made unmapped and written through
+/// `queue`, so `frame_targets::made` sees what the device made of it — a buffer mapped at
+/// creation fails before a scope can — and the frame is given up where there was no room.
+pub(in crate::gfx) fn written_quad_indices(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    quads: u32,
+) -> wgpu::Buffer {
+    let indices = quad_index_data(quads);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(QUAD_INDICES),
+        size: std::mem::size_of_val(indices.as_slice()) as u64,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | blas_input(device),
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&indices));
+    buffer
+}
+
+fn quad_index_data(quads: u32) -> Vec<u32> {
+    (0..quads)
+        .flat_map(|q| {
+            let b = q * 4;
+            [b, b + 1, b + 2, b, b + 2, b + 3]
+        })
+        .collect()
 }
 
 /// `contents` in a buffer of `usage`, made as `DeviceExt::create_buffer_init` makes it: the
@@ -104,7 +134,6 @@ fn filled(
     buffer.unmap();
     Some(buffer)
 }
-
 /// Who turns ray tracing on (`HORIZON_RAY_TRACING`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::gfx) enum Switch {
@@ -175,7 +204,7 @@ pub(super) fn pick(requested: bool, offered: wgpu::Features) -> wgpu::Features {
 }
 
 /// The device's opt-in to `features`' experimental ones.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn experimental(features: wgpu::Features) -> wgpu::ExperimentalFeatures {
     if features.contains(RAY_QUERY) {
         horizon_hdr::experimental_features()
