@@ -2,15 +2,6 @@
 use super::*;
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
-/// The column `at` stands in, lit as a server's arrival lights it: the remote player
-/// tick reaches `Player.tick` only once it is lit (`tick.rs:156`), so a position this
-/// fixture puts far from the chunk `connect` loaded needs its own column.
-fn light_column(game: &mut Game<'_>, at: Vec3) {
-    let (cx, cz) = ((at.x.floor() as i32) >> 4, (at.z.floor() as i32) >> 4);
-    game.streaming
-        .insert_remote(&mut game.world, horizon_client::chunk::Chunk::empty(cx, cz));
-}
-
 /// One player tick from `at` moving with `velocity`, through the entry a client of a
 /// server ticks its own player with; reads where it left the player, so a test can tell
 /// a clamp that runs after the move from one that runs before it.
@@ -21,7 +12,7 @@ fn tick_from(game: &mut Game<'_>, at: Vec3, velocity: Vec3) -> Vec3 {
         player.position = at;
         player.velocity = velocity;
     }
-    game.tick_remote_player_body(true, false).unwrap();
+    game.tick_remote_player(true, false).unwrap();
     game.player.as_ref().unwrap().position
 }
 
@@ -114,7 +105,7 @@ fn a_mounted_tick_keeps_the_seat_past_the_world_edge() {
         }))
         .unwrap();
         assert_eq!(game.riding, Some(90), "the local player rides the seat");
-        game.tick_remote_player_body(true, false).unwrap();
+        game.tick_remote_player(true, false).unwrap();
         let at = game.player.as_ref().unwrap().position;
         assert!(
             (at.x - seat.x).abs() < 1e-6,

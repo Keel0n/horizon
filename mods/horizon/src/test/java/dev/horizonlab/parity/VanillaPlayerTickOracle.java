@@ -26,11 +26,11 @@ import net.minecraft.world.phys.Vec3;
 
 /**
  * Runs the shipped `Player.tick` once per start position and prints where the player ends:
- * a spectator that flies and does not move, so the only thing the tick can do to the
- * position is `Player.tick`'s own world-edge clamp. The move inside the tick (`travel`) is
- * a fixture boundary and does nothing, the position is put there by the fixture rather
- * than by a move into it, and the seat a passenger is put on (`Entity.rideTick`), the
- * level of detail and the rest of the player's tick are outside this oracle.
+ * a spectator that flies, with the velocity each case gives it, so the tick's own move and
+ * `Player.tick`'s world-edge clamp are both the shipped ones. The position starts where the
+ * fixture puts it rather than from a move into it, and the seat a passenger is put on
+ * (`Entity.rideTick`), the level of detail and the rest of the player's tick are outside
+ * this oracle.
  */
 public final class VanillaPlayerTickOracle {
     /** The level's block lookups reach for its server, which answers nothing else. */
@@ -42,8 +42,9 @@ public final class VanillaPlayerTickOracle {
         int next;
         /**
          * The border `LivingEntity`'s base tick reads for a player: its default size
-         * (29,999,984 blocks from the centre) is inside the hard edge, and a player past
-         * it is only damaged there, never moved, so the position is still the tick's own.
+         * (`WorldBorder.java:459`, 29,999,985 blocks from the centre) is outside every
+         * start position here, and a player past it is only damaged there, never moved,
+         * so the position is still the tick's own.
          */
         net.minecraft.world.level.border.WorldBorder border;
 
@@ -167,10 +168,6 @@ public final class VanillaPlayerTickOracle {
             return GameType.SPECTATOR;
         }
 
-        /** The tick's own move is the fixture, so it stays where the case put it. */
-        @Override
-        public void travel(Vec3 input) {}
-
         /** No entities stand around to push the player: the fixture puts it where it is. */
         @Override
         protected void pushEntities() {}
@@ -182,17 +179,22 @@ public final class VanillaPlayerTickOracle {
         protected void handlePortal() {}
     }
 
-    /** The fixture's start positions: inside the edge, past it on each axis, on it. */
+    /**
+     * The fixture's start positions and the velocity each tick starts with: inside the edge,
+     * past it on each axis, on it, above it, and two ticks that cross it in their own move.
+     */
     static final Object[][] CASES = {
-        {"inside_x", 29999980.0, 64.0, 8.0},
-        {"past_x", 30000020.0, 64.0, 8.0},
-        {"past_negative_x", -30000020.0, 64.0, -8.0},
-        {"past_z", 8.0, 64.0, 30000020.0},
-        {"past_negative_z", 8.0, 64.0, -30000020.0},
-        {"on_the_edge", 30000000.0, 64.0, 8.0},
-        {"at_the_clamp", 29999999.0, 64.0, 8.0},
-        {"high_y", 8.0, 30000000.0, 8.0},
-        {"past_negative_x_and_z", -30000020.0, 64.0, -30000020.0},
+        {"inside_x", 29999980.0, 64.0, 8.0, 0.0, 0.0, 0.0},
+        {"past_x", 30000020.0, 64.0, 8.0, 0.0, 0.0, 0.0},
+        {"past_negative_x", -30000020.0, 64.0, -8.0, 0.0, 0.0, 0.0},
+        {"past_z", 8.0, 64.0, 30000020.0, 0.0, 0.0, 0.0},
+        {"past_negative_z", 8.0, 64.0, -30000020.0, 0.0, 0.0, 0.0},
+        {"on_the_edge", 30000000.0, 64.0, 8.0, 0.0, 0.0, 0.0},
+        {"at_the_clamp", 29999999.0, 64.0, 8.0, 0.0, 0.0, 0.0},
+        {"high_y", 8.0, 30000000.0, 8.0, 0.0, 0.0, 0.0},
+        {"past_negative_x_and_z", -30000020.0, 64.0, -30000020.0, 0.0, 0.0, 0.0},
+        {"crossing_x", 29999980.0, 64.0, 8.0, 40.0, 0.0, 0.0},
+        {"crossing_negative_z", 8.0, 64.0, -29999980.0, 0.0, 0.0, -40.0},
     };
 
     static String bits(double value) {
@@ -231,6 +233,7 @@ public final class VanillaPlayerTickOracle {
             var actor = new Actor(scene);
             actor.getAbilities().flying = true;
             actor.setPos((Double) row[1], (Double) row[2], (Double) row[3]);
+            actor.setDeltaMovement((Double) row[4], (Double) row[5], (Double) row[6]);
             actor.tick();
             if (out.length() > 1) {
                 out.append(',');
