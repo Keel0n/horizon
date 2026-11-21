@@ -617,3 +617,81 @@ fn a_leftover_that_will_not_go_stops_the_file() {
     assert_eq!(version_of(&file, kept), 4000);
     drop(held);
 }
+
+/// Links `link` to the directory `target`: a symlink where the user may make
+/// one, else a junction (Windows), which needs no privilege. Fails when the
+/// machine allows neither; the caller then has no aliased path to test with.
+fn link_dir(link: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link).or_else(|_| {
+            let status = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other("mklink /J failed"))
+            }
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (link, target);
+        Err(io::Error::other("no way to link a directory"))
+    }
+}
+
+/// A staging folder that links to the live one is detached before the run,
+/// so the cancel after the first chunk finds the live region untouched:
+/// written through the link, the leftover removal would have deleted the
+/// live file and the rewrite would have left only the first chunk in it.
+#[test]
+fn an_aliased_staging_folder_keeps_the_live_region() {
+    let world = TempWorld::new("aliased-staging");
+    let live = world.folder(OVERWORLD, "entities");
+    let file = live.join("r.0.0.mca");
+    let positions: Vec<ChunkPos> = (0..3).map(|x| ChunkPos::new(x, 0)).collect();
+    let chunks: Vec<(ChunkPos, Tag)> = positions
+        .iter()
+        .map(|pos| (*pos, entity_chunk(4000, pos.x, pos.z)))
+        .collect();
+    write_chunks(&file, &chunks);
+    let staging = resolve_recreate_directory(&live);
+    if let Err(e) = link_dir(&staging, &live) {
+        eprintln!("an_aliased_staging_folder_keeps_the_live_region: cannot create the link: {e}");
+        return;
+    }
+
+    let progress = Arc::new(UpgradeProgress::new());
+    let mut builder = Builder::new(UpgradeDataFixType::EntityChunk, "entities", true);
+    builder.threads = 1;
+    let canceling = progress.clone();
+    // The first chunk upgraded cancels the run.
+    builder.add_tag_modifier(
+        CURRENT,
+        Box::new(move |_, _| {
+            canceling.set_canceled();
+            false
+        }),
+    );
+    let mut upgrader = RegionStorageUpgrader::init(builder, progress.clone(), 0, OVERWORLD, &world.0);
+    upgrader.upgrade();
+
+    for pos in &positions {
+        assert_eq!(
+            version_of(&file, *pos),
+            4000,
+            "the live region lost chunk {pos:?} through the aliased staging folder"
+        );
+    }
+    assert!(!staging.exists(), "the aliased staging path stayed");
+}

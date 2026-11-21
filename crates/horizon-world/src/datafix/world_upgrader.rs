@@ -195,7 +195,16 @@ impl RegionStorageUpgrader {
         base: &Path,
     ) -> Self {
         let region_folder = dimension_path(base, dimension).join(builder.folder);
-        let files = all_chunk_positions(&region_folder);
+        let files = if builder.recreate_region_files
+            && !detach_aliased_recreate_directory(&region_folder)
+        {
+            // The staging folder names the live one and the link would not
+            // go: writing into it is writing the world, so the folder stays
+            // out of the run.
+            Vec::new()
+        } else {
+            all_chunk_positions(&region_folder)
+        };
         progress.add_total_file_fix_operations(files.len() as i32);
         progress.add_total_chunks(files.iter().map(|f| f.chunks.len() as i32).sum());
         Self {
@@ -480,6 +489,43 @@ fn move_external_payloads(new_file: &Path, folder: &Path) -> io::Result<()> {
 fn resolve_recreate_directory(folder: &Path) -> PathBuf {
     let name = folder.file_name().unwrap_or_default().to_string_lossy();
     folder.with_file_name(format!("{NEW_DIRECTORY_PREFIX}{name}"))
+}
+
+/// Cuts a staging folder that resolves to the live one loose, once per
+/// folder, before anything is removed or opened in it: a `new_entities` that
+/// is a link to `entities` would be written through, the leftover removal of
+/// `try_process_one_position` deleting the live region file before its
+/// rewrite starts, so a cancel or a write failure leaves the world without
+/// the region or with a partial copy. Only the link itself goes — on Windows
+/// `remove_dir` takes a junction or a directory symlink, never its target —
+/// and the writer's `create_dir_all` makes the real folder. Returns whether
+/// the staging folder is safe to write into.
+fn detach_aliased_recreate_directory(region_folder: &Path) -> bool {
+    let staging = resolve_recreate_directory(region_folder);
+    let aliased = match fs::symlink_metadata(&staging) {
+        Err(_) => return true,
+        Ok(meta) if meta.file_type().is_symlink() => true,
+        Ok(meta) if meta.is_dir() => matches!(
+            (fs::canonicalize(&staging), fs::canonicalize(region_folder)),
+            (Ok(staging), Ok(live)) if staging == live
+        ),
+        Ok(_) => false,
+    };
+    if !aliased {
+        return true;
+    }
+    // A symlink to a directory fails `remove_dir` on Unix, a directory one
+    // fails `remove_file` on Windows; one of the two takes the link.
+    match fs::remove_dir(&staging).or_else(|_| fs::remove_file(&staging)) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(
+                "Not writing through staging folder {}: it names the live folder and will not go: {e}",
+                staging.display()
+            );
+            false
+        }
+    }
 }
 
 /// `r.<x>.<z>.mca`'s coordinates (`REGEX`).
