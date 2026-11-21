@@ -27,7 +27,7 @@ impl Game<'_> {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let facts = self.res.facts();
         let name = facts.get(state).name.clone();
-        let container = self.res.behaviours().is_shulker_box(state)
+        let container = is_shulker_box(self.res.behaviours(), state)
             || matches!(
                 name.trim_start_matches("minecraft:"),
                 "chest"
@@ -155,7 +155,7 @@ impl Game<'_> {
             && !horizon_client::menu::container_items::vanilla_fits_inside_container_items(stack)
             && self.container.is_some_and(|k| {
                 let state = self.world.block(k.0, k.1, k.2);
-                self.res.behaviours().is_shulker_box(state)
+                is_shulker_box(self.res.behaviours(), state)
             })
     }
     /// Opening an ender chest shows the player's ender inventory in its place.
@@ -226,6 +226,13 @@ fn facing_step(facing: &str) -> (i32, i32) {
         "west" => (-1, 0),
         _ => (1, 0),
     }
+}
+
+/// Java's `state.getBlock() instanceof ShulkerBoxBlock`, for this client's
+/// tables: the block's class, which a content block answers with its template's.
+/// The client's own door to that answer, kept where mod code has always found it.
+pub(super) fn is_shulker_box(behaviours: &Behaviours, state: BlockStateId) -> bool {
+    behaviours.is_shulker_box(state)
 }
 
 /// `ChestBlock.getConnectedBlockPos` for a chest whose `type` is not single:
@@ -311,7 +318,7 @@ impl Game<'_> {
         let id = self.world.block(key.0, key.1, key.2);
         let facts = self.res.facts();
         let name = facts.get(id).name.clone();
-        let sound = if self.res.behaviours().is_shulker_box(id) {
+        let sound = if is_shulker_box(self.res.behaviours(), id) {
             if open {
                 "minecraft:block.shulker_box.open"
             } else {
@@ -458,7 +465,7 @@ impl Game<'_> {
     }
     pub(super) fn container_block_is_shulker(&self) -> bool {
         self.container_state()
-            .is_some_and(|id| self.res.behaviours().is_shulker_box(id))
+            .is_some_and(|id| is_shulker_box(self.res.behaviours(), id))
     }
     /// The state of the open container's block.
     fn container_state(&self) -> Option<horizon_world::registry::BlockStateId> {
@@ -526,7 +533,7 @@ impl Game<'_> {
         let grey = rgba(64, 64, 64, 255);
         if self
             .container_state()
-            .is_some_and(|id| self.res.behaviours().is_shulker_box(id))
+            .is_some_and(|id| is_shulker_box(self.res.behaviours(), id))
         {
             batch.sprite_region(
                 atlas,
