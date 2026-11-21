@@ -306,3 +306,6 @@ mod local_rotation_tests;
 
 #[path = "player_world_edge_tests.rs"]
 mod player_world_edge_tests;
+
+#[path = "player_world_edge_parity_tests.rs"]
+mod player_world_edge_parity_tests;
