@@ -5,9 +5,13 @@ use super::ItemStack;
 use horizon_world::native_load_context::LoopContext;
 
 /// Vanilla's `Item.canFitInsideContainerItems`: a shulker box can't go inside an item that
-/// holds items (`BlockItem` answers with its block's class, `ShulkerBoxBlock`, whose block
-/// entity is a shulker box's: `containers::block_entity_type` is that table, and a content
-/// block's answer is its template's).
+/// holds items (`BlockItem` answers `!(getBlock() instanceof ShulkerBoxBlock)`). An item id
+/// carries only its block's name, so the answer here is the block entity type that name
+/// holds: `BlockEntityType.validBlocks` accepts `minecraft:shulker_box` for vanilla's 17
+/// shulker boxes and nothing else, and a content block answers with its template's. A mod
+/// that declared a shulker box entity type on a block of another template would answer
+/// false where vanilla answers true — its item's own part (`can_fit_inside_container_items`)
+/// is where it can say so.
 pub fn vanilla_fits_inside_container_items(stack: &ItemStack) -> bool {
     crate::containers::block_entity_type(&stack.item) != Some("minecraft:shulker_box")
 }

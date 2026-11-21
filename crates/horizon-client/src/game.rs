@@ -2263,7 +2263,7 @@ impl Game<'_> {
             return (player_context && self.held().is_some_and(|s| *s.item == **name))
                 .then_some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
         }
-        if !name.ends_with("shulker_box") {
+        if !self.res.behaviours().is_shulker_box(state) {
             return None;
         }
         let progress = anims.shulkers.get(&pos).map_or(0.0, |s| s.progress);
@@ -6769,9 +6769,13 @@ impl Game<'_> {
         old: BlockStateId,
         particle: &str,
     ) {
-        let old = self.pack.assets.registry.state(old).cloned();
+        let id = old;
+        let old = self.pack.assets.registry.state(id).cloned();
         let Some(old) = old else { return };
-        if !old.name.ends_with("copper_chest") {
+        // `CopperChestBlock` is a `ChestBlock`, and the transform only reaches
+        // a copper one; the class says so, a name that ends in `copper_chest`
+        // does not.
+        if !self.res.behaviours().is_chest_block(id) {
             return;
         }
         let kind = old

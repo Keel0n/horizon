@@ -99,8 +99,9 @@ impl Game<'_> {
                 false
             }
             // ShulkerBoxBlock: suffocating while closed; a box seen open
-            // here is rare enough to count as closed.
-            _ if name.ends_with("shulker_box") => true,
+            // here is rare enough to count as closed. Asked of the class, so a
+            // content block of a shulker box's template counts.
+            _ if self.res.behaviours().is_shulker_box(state) => true,
             _ => {
                 facts.full_collision
                     && self

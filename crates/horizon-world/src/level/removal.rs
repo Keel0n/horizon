@@ -31,18 +31,39 @@ pub enum PreRemove {
     Beacon,
 }
 
+/// The side effect of removing the block entity of the block `state` holds:
+/// vanilla runs that entity's own `preRemoveSideEffects`, so a
+/// `ShulkerBoxBlockEntity` keeps its contents and a block whose id only ends in
+/// a shulker box's name is not a shulker box at all.
+pub fn pre_remove(behaviours: &super::Behaviours, state: crate::registry::BlockStateId) -> PreRemove {
+    let class = behaviours.data(state);
+    if class.is(super::classes::Class::ShulkerBox) {
+        return PreRemove::ShulkerBox;
+    }
+    // `ChestBlockEntity.preRemoveSideEffects` drops its 27 slots: chests,
+    // trapped chests and copper chests alike, by class.
+    if behaviours.is_chest_block(state) {
+        return PreRemove::Contents {
+            slots: 27,
+            furnace: false,
+        };
+    }
+    let block = behaviours.block(state);
+    pre_remove_name(&behaviours.table.info(block).name)
+}
+
 /// The side effect of removing the block entity of block `name` (a
-/// `minecraft:` identifier).
-pub fn pre_remove(name: &str) -> PreRemove {
+/// `minecraft:` identifier): the containers whose own rule the block's name
+/// states (a `BarrelBlockEntity` drops its slots, a `HangingSignBlockEntity`
+/// nothing).
+fn pre_remove_name(name: &str) -> PreRemove {
     let n = name.strip_prefix("minecraft:").unwrap_or(name);
     let contents = |slots| PreRemove::Contents {
         slots,
         furnace: false,
     };
     match n {
-        "chest" | "trapped_chest" | "barrel" => contents(27),
-        _ if n.ends_with("copper_chest") => contents(27),
-        _ if n.ends_with("shulker_box") => PreRemove::ShulkerBox,
+        "barrel" => contents(27),
         "hopper" => contents(5),
         "dispenser" | "dropper" | "crafter" => contents(9),
         "brewing_stand" => contents(5),

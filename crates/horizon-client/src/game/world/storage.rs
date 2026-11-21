@@ -323,8 +323,12 @@ impl Game<'_> {
             } else {
                 "minecraft:block.ender_chest.close"
             }
-        } else if self.res.behaviours().is_chest_block(id) {
-            horizon_client::mobs::transport_items::chest_hinge_sound(&name, open)
+        } else if let Some(sound) = horizon_client::mobs::transport_items::chest_hinge_sound(
+            self.res.behaviours(),
+            id,
+            open,
+        ) {
+            sound
         } else if &*name == "minecraft:barrel" {
             if open {
                 "minecraft:block.barrel.open"

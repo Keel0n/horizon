@@ -863,7 +863,7 @@ pub fn ticker(name: &str, prop: impl Fn(&str) -> Option<String>) -> Option<Ticke
         "dragon_head" | "dragon_wall_head" | "piglin_head" | "piglin_wall_head" => Ticker::Skull {
             powered: prop("powered").as_deref() == Some("true"),
         },
-        n if n.ends_with("shulker_box") => Ticker::Shulker {
+        n if crate::containers::is_shulker_box_block(n) => Ticker::Shulker {
             facing: prop("facing")
                 .as_deref()
                 .and_then(direction_index)

@@ -2940,7 +2940,7 @@ mod shulker_lock_drop_tests {
             (7, 3, "chest", true, "command"),
             (7, 11, "crafter", true, "command"),
         ] {
-            let shulker = kind.ends_with("shulker_box");
+            let shulker = horizon_client::containers::is_shulker_box_block(&format!("minecraft:{kind}"));
             let mut fields = Vec::new();
             if shulker {
                 fields.push("CustomName:\"Box\"");

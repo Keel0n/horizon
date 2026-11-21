@@ -902,7 +902,7 @@ impl GameLevel<'_> {
                     furnace: false,
                 }
             }
-            _ => removal::pre_remove(&name),
+            _ => removal::pre_remove(self.behaviours, old),
         };
         let mut neighbour_updates = 0;
         if side_effects {
@@ -1062,7 +1062,7 @@ impl GameLevel<'_> {
             return true;
         }
         let name = self.facts.get(old).name.clone();
-        let items = match removal::pre_remove(&name) {
+        let items = match removal::pre_remove(self.behaviours, old) {
             PreRemove::Contents { slots, .. } if &*name == "minecraft:decorated_pot" => {
                 // Containers.dropContents reads getTheItem, which unpacks the loot table.
                 let mut tag = tag;

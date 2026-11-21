@@ -89,25 +89,35 @@ fn name_at(w: &MobWorld, p: [i32; 3]) -> String {
         .name
         .to_string()
 }
-/// `ChestBlock.getOpenChestSound` / `getCloseChestSound` of a chest block:
-/// a copper chest's comes from `CopperChestBlock.getHingeSound`, by its
-/// weather state (a waxed chest's is its state's).
-pub fn chest_hinge_sound(block: &str, open: bool) -> &'static str {
-    // A content block's chest is its template's: the weather state a copper
-    // chest's hinge depends on is the block's own, so the template names it.
-    let base = horizon_client::block_entity_types::factory_block(block)
+/// `ChestBlock.getOpenChestSound` / `getCloseChestSound` of a chest block: a
+/// copper chest's comes from `CopperChestBlock.getHingeSound`, by its weather
+/// state (a waxed chest's is its state's). Only a `ChestBlock` has them, and a
+/// content block's chest is its template's (`factory_block`), so its weather
+/// state is the template's too.
+pub fn chest_hinge_sound(
+    behaviours: &horizon_world::level::Behaviours,
+    state: BlockStateId,
+    open: bool,
+) -> Option<&'static str> {
+    if !behaviours.is_chest_block(state) {
+        return None;
+    }
+    let block = behaviours.block(state);
+    let base = horizon_client::block_entity_types::factory_block(&behaviours.table.info(block).name)
         .trim_start_matches("minecraft:")
         .trim_start_matches("waxed_");
-    match (base.ends_with("copper_chest"), base.split('_').next(), open) {
-        (false, _, true) => "minecraft:block.chest.open",
-        (false, _, false) => "minecraft:block.chest.close",
-        (true, Some("weathered"), true) => "minecraft:block.copper_chest_weathered.open",
-        (true, Some("weathered"), false) => "minecraft:block.copper_chest_weathered.close",
-        (true, Some("oxidized"), true) => "minecraft:block.copper_chest_oxidized.open",
-        (true, Some("oxidized"), false) => "minecraft:block.copper_chest_oxidized.close",
-        (true, _, true) => "minecraft:block.copper_chest.open",
-        (true, _, false) => "minecraft:block.copper_chest.close",
-    }
+    Some(
+        match (base.ends_with("copper_chest"), base.split('_').next(), open) {
+            (false, _, true) => "minecraft:block.chest.open",
+            (false, _, false) => "minecraft:block.chest.close",
+            (true, Some("weathered"), true) => "minecraft:block.copper_chest_weathered.open",
+            (true, Some("weathered"), false) => "minecraft:block.copper_chest_weathered.close",
+            (true, Some("oxidized"), true) => "minecraft:block.copper_chest_oxidized.open",
+            (true, Some("oxidized"), false) => "minecraft:block.copper_chest_oxidized.close",
+            (true, _, true) => "minecraft:block.copper_chest.open",
+            (true, _, false) => "minecraft:block.copper_chest.close",
+        },
+    )
 }
 /// `CopperGolemAi.TRANSPORT_ITEM_SOURCE_BLOCK` / `_DESTINATION_BLOCK`.
 fn wanted(w: &MobWorld, m: &Mob, name: &str) -> bool {
