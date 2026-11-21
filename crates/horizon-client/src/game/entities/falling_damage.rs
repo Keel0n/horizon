@@ -197,7 +197,9 @@ impl Game<'_> {
     /// before block effects and portal handling can transfer the entity.
     pub(super) fn falling_block_impact(&mut self, block: &mut FallingBlock, distance: f64) {
         let name = self.res.facts().get(block.state).name.clone();
-        let anvil = name.ends_with("anvil");
+        // `FallingBlockEntity.causeFallDamage` asks the block's class
+        // (`AnvilBlock`), never its name.
+        let anvil = self.res.behaviours().is_anvil(block.state);
         let stalactite = matches!(
             &*name,
             "minecraft:pointed_dripstone" | "minecraft:sulfur_spike"
@@ -284,9 +286,8 @@ impl Game<'_> {
     /// entity and the carried `TileEntityData` applied through loadWithComponents.
     pub(super) fn finish_falling_block(&mut self, block: FallingBlock, pos: [i32; 3]) {
         let name = self.res.facts().get(block.state).name.clone();
-        let anvil = name.ends_with("anvil");
-        // Fallable.onBrokenAfterFall: the anvil's, the pointed dripstone's and
-        // the sulfur spike's level event.
+        // `Fallable.onBrokenAfterFall`: the anvil's own, by class.
+        let anvil = self.res.behaviours().is_anvil(block.state);
         let sound_event = match &*name {
             "minecraft:pointed_dripstone" => Some(1045),
             "minecraft:sulfur_spike" => Some(1052),
@@ -303,10 +304,9 @@ impl Game<'_> {
                 });
             } else if self
                 .res
-                .facts()
-                .get(block.state)
-                .name
-                .starts_with("minecraft:suspicious_")
+                .behaviours()
+                .data(block.state)
+                .is(horizon_world::level::classes::Class::Brushable)
             {
                 // BrushableBlock.onBrokenAfterFall.
                 let at = BlockPos::new(pos[0], pos[1], pos[2]);

@@ -37,14 +37,17 @@ impl Damage {
             ..Self::default()
         }
     }
-    /// A block that starts to fall: anvils hurt, and a brushable block
-    /// breaks where it lands (BrushableBlock.tick: disableDrop).
-    pub fn falling(block: &str) -> Self {
-        if block.ends_with("anvil") {
+    /// A block that starts to fall: anvils hurt (`AnvilBlock.falling`), and a
+    /// brushable block breaks where it lands (`BrushableBlock.tick`:
+    /// disableDrop). Vanilla asks the block's class for both, so a content
+    /// block of an anvil's or a brushable's template counts and a name that
+    /// only ends in `anvil` does not.
+    pub fn falling(anvil: bool, brushable: bool) -> Self {
+        if anvil {
             Self::anvil()
         } else {
             Self {
-                cancel_drop: block.starts_with("minecraft:suspicious_"),
+                cancel_drop: brushable,
                 ..Self::default()
             }
         }
@@ -350,12 +353,15 @@ mod tests {
         assert_eq!((absent.hurt_entities, absent.cancel_drop), (true, false));
     }
 
+    /// `BrushableBlock.tick` cancels the drop of a brushable block's fall, and
+/// `AnvilBlock.falling` (`setHurtsEntities(2.0F, 40)`) makes an anvil hurt by
+/// distance; both are the block's class, so they are asked of it.
     #[test]
-    fn only_brushable_blocks_break_where_they_land() {
-        assert!(Damage::falling("minecraft:suspicious_gravel").cancel_drop);
-        assert!(Damage::falling("minecraft:suspicious_sand").cancel_drop);
-        assert!(!Damage::falling("minecraft:gravel").cancel_drop);
-        assert!(Damage::falling("minecraft:chipped_anvil").hurt_entities);
+    fn only_a_brushable_block_breaks_where_it_lands_and_only_an_anvil_hurts() {
+        assert!(Damage::falling(false, true).cancel_drop);
+        assert!(!Damage::falling(false, false).cancel_drop);
+        assert!(Damage::falling(true, false).hurt_entities);
+        assert_eq!(Damage::falling(true, false), Damage::anvil());
     }
 
     #[test]

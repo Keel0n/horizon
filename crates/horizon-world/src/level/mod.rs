@@ -1440,6 +1440,22 @@ impl Behaviours {
     pub fn data(&self, state: BlockStateId) -> &BlockData {
         self.block_data(self.table.block(state))
     }
+    /// Java's `state.getBlock() instanceof ChestBlock`: the class, never the
+    /// name, so a content block of a chest's template answers true and a block
+    /// whose id only ends in a chest's name does not.
+    pub fn is_chest_block(&self, state: BlockStateId) -> bool {
+        self.data(state).is(classes::Class::Chest)
+    }
+    /// Java's `instanceof ShulkerBoxBlock` (`ShulkerBoxBlockEntity`'s slots,
+    /// the dropped box's contents).
+    pub fn is_shulker_box(&self, state: BlockStateId) -> bool {
+        self.data(state).is(classes::Class::ShulkerBox)
+    }
+    /// Java's `instanceof AnvilBlock` (the falling block's impact and wear;
+    /// `BlockTags.ANVIL` holds exactly vanilla's three anvils).
+    pub fn is_anvil(&self, state: BlockStateId) -> bool {
+        self.data(state).is(classes::Class::Anvil)
+    }
     pub fn block(&self, state: BlockStateId) -> BlockId {
         self.table.block(state)
     }

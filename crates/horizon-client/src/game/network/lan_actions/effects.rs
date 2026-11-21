@@ -49,7 +49,11 @@ impl Game<'_> {
         }
         let hand_operated = !changed.is_empty()
             && changed.iter().all(|&(x, y, z)| {
-                crate::game::remote::hand_operated(&facts.get(self.world.block(x, y, z)).name)
+                crate::game::remote::hand_operated(
+                    self.res
+                        .behaviours()
+                        .data(self.world.block(x, y, z)),
+                )
             });
         if hand_operated && let Some(capture) = self.audio.capture.as_mut() {
             sounds.extend(capture.drain(heard.min(capture.len())..));

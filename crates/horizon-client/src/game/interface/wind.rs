@@ -173,15 +173,41 @@ pub(super) fn reverse(p: &mut Projectile) {
 pub(super) fn above_the_top(shape: LevelShape, y: f64) -> bool {
     y >= f64::from(shape.max_y() + 30)
 }
-/// Whether a block reacts to a wind charge's burst by being used.
-fn triggers(name: &str) -> bool {
-    let n = name.trim_start_matches("minecraft:");
-    // Doors and trapdoors open unless iron; gates, buttons, levers and bells react.
-    (n.ends_with("_door") || n.ends_with("_trapdoor")) && !n.starts_with("iron_")
-        || n.ends_with("_fence_gate")
-        || n.ends_with("_button")
-        || n == "lever"
-        || n == "bell"
+/// Whether a block reacts to a wind charge's burst by being used
+/// (`BlockBehaviour.onExplosionHit`'s `TRIGGER_BLOCK` overrides): a
+/// `DoorBlock` or `TrapDoorBlock` asks its `BlockSetType.canOpenByWindCharge`
+/// (an iron door or trapdoor answers false, a copper one true), and a
+/// `FenceGateBlock`, `ButtonBlock`, `LeverBlock` or `BellBlock` always reacts.
+/// Vanilla asks the class: a content block of one of those templates counts
+/// whatever its id, and a block named `..._door` alone does not.
+fn triggers(data: &horizon_world::level::data::BlockData) -> bool {
+    use horizon_world::level::classes::Class;
+    if data.is(Class::Door) || data.is(Class::TrapDoor) {
+        return data
+            .set_type
+            .as_ref()
+            .is_some_and(|t| t.can_open_by_wind_charge);
+    }
+    data.is(Class::FenceGate)
+        || data.is(Class::Button)
+        || data.is(Class::Lever)
+        || data.is(Class::Bell)
+}
+
+/// The blocks a player's hand flips as it uses them, which a guest's client
+/// predicts at once (its own click, before the server's changes arrive): a
+/// door or trapdoor whose `BlockSetType.canOpenByHand`, a fence gate, a lever,
+/// a button or a cauldron. The same class test [`triggers`] runs, asking the
+/// hand's flag instead of the burst's.
+pub(in crate::game) fn hand_operated(data: &horizon_world::level::data::BlockData) -> bool {
+    use horizon_world::level::classes::Class;
+    if data.is(Class::Door) || data.is(Class::TrapDoor) {
+        return data.set_type.as_ref().is_some_and(|t| t.can_open_by_hand);
+    }
+    data.is(Class::FenceGate)
+        || data.is(Class::Button)
+        || data.is(Class::Lever)
+        || data.is(Class::AbstractCauldron)
 }
 impl Game<'_> {
     /// `Player.itemAttackInteraction` applies trigger-only held-item effects
@@ -822,7 +848,9 @@ impl Game<'_> {
     /// `BlockBehaviour.onExplosionHit` for `TRIGGER_BLOCK`: doors, gates,
     /// buttons, levers and bells react as if used; candles go out.
     fn wind_trigger_block(&mut self, pos: [i32; 3]) -> Result<()> {
+        use horizon_world::level::classes::Class;
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        let data = self.res.behaviours().data(state);
         let name = self.res.facts().get(state).name.clone();
         let prop = |game: &Self, key: &str| {
             game.pack
@@ -831,7 +859,7 @@ impl Game<'_> {
                 .state(state)
                 .and_then(|s| s.properties.get(key).cloned())
         };
-        if name.ends_with("candle") || name.ends_with("candle_cake") {
+        if data.is(Class::AbstractCandle) {
             // AbstractCandleBlock.onExplosionHit: extinguish(null, ...), the
             // candle's own sound and a block-change game event (the smoke is a
             // client-level particle, which a server level never draws).
@@ -841,13 +869,13 @@ impl Game<'_> {
             self.process_level_events()?;
             return Ok(());
         }
-        if !triggers(&name) {
+        if !triggers(data) {
             return Ok(());
         }
         // BellBlock.onExplosionHit: attemptToRing with no direction, so the bell
         // rings toward its facing, not the face the burst came from,
         // powered or not.
-        if &*name == "minecraft:bell" {
+        if data.is(Class::Bell) {
             self.with_level(|b, level, ticks| {
                 b.bell_attempt_to_ring(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
             });
@@ -856,7 +884,7 @@ impl Game<'_> {
         }
         // Doors react in their lower half only; powered ones and pressed
         // buttons stay as they are.
-        if name.ends_with("_door") && prop(self, "half").as_deref() != Some("lower") {
+        if data.is(Class::Door) && prop(self, "half").as_deref() != Some("lower") {
             return Ok(());
         }
         if prop(self, "powered").as_deref() == Some("true") && &*name != "minecraft:lever" {
@@ -864,7 +892,7 @@ impl Game<'_> {
         }
         // FenceGateBlock.onExplosionHit toggles the gate without turning it
         // towards anyone, as a click would.
-        if name.ends_with("_fence_gate") {
+        if data.is(Class::FenceGate) {
             self.with_level(|b, level, ticks| {
                 b.fence_gate_exploded(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
             });
@@ -962,17 +990,6 @@ mod wind_dragon_tests;
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_burst_opens_wooden_doors_but_not_iron_ones() {
-        assert!(triggers("minecraft:oak_door"));
-        assert!(triggers("minecraft:copper_trapdoor"));
-        assert!(!triggers("minecraft:iron_door"));
-        assert!(!triggers("minecraft:iron_trapdoor"));
-        assert!(triggers("minecraft:lever"));
-        assert!(triggers("minecraft:stone_button"));
-        assert!(triggers("minecraft:bell"));
-        assert!(!triggers("minecraft:stone"));
-    }
     /// ServerLevel ticks entities in join order: an orb, falling block or TNT that
     /// joined before the charge has moved by the time the charge bursts, so the
     /// push belongs to its next tick; one that joined after has not.

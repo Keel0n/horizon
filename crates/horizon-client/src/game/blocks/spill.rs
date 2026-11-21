@@ -4,10 +4,10 @@
 //! moment vanilla draws them. The item entities they make are added to the
 //! world as soon as the behaviour returns, within the same tick.
 use super::api_values::TryIntoApi;
-use super::{Game, GameLevel, Screen, storage::is_shulker_box};
+use super::{Game, GameLevel, Screen};
 use horizon_client::{
     block_entity_item, block_entity_nbt,
-    containers::{Banner, BlockEntity},
+    containers::{Banner, BlockEntity, is_shulker_box_block as is_shulker_box},
     furnace::FurnaceCooking,
     item_data,
     items::{BlockLootRoll, ItemStack},

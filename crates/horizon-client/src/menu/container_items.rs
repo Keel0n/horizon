@@ -5,9 +5,11 @@ use super::ItemStack;
 use horizon_world::native_load_context::LoopContext;
 
 /// Vanilla's `Item.canFitInsideContainerItems`: a shulker box can't go inside an item that
-/// holds items (`ShulkerBoxBlock` items answer false).
+/// holds items (`BlockItem` answers with its block's class, `ShulkerBoxBlock`, whose block
+/// entity is a shulker box's: `containers::block_entity_type` is that table, and a content
+/// block's answer is its template's).
 pub fn vanilla_fits_inside_container_items(stack: &ItemStack) -> bool {
-    !stack.item.ends_with("shulker_box")
+    crate::containers::block_entity_type(&stack.item) != Some("minecraft:shulker_box")
 }
 
 /// `ItemStack.canFitInsideContainerItems` (`ShulkerBoxSlot.mayPlace`): vanilla's answer,

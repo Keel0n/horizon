@@ -119,7 +119,7 @@ impl Game<'_> {
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, disarmed, 260));
             self.post_block_game_event("minecraft:shear", pos, self.sculk_actor(), None);
         }
-        if creative && storage::is_shulker_box(&facts.name) {
+        if creative && self.res.behaviours().is_shulker_box(state) {
             self.drop_creative_shulker(pos);
         }
         // BeehiveBlock.playerWillDestroy: a creative break still drops the hive

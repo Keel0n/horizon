@@ -93,7 +93,9 @@ fn name_at(w: &MobWorld, p: [i32; 3]) -> String {
 /// a copper chest's comes from `CopperChestBlock.getHingeSound`, by its
 /// weather state (a waxed chest's is its state's).
 pub fn chest_hinge_sound(block: &str, open: bool) -> &'static str {
-    let base = block
+    // A content block's chest is its template's: the weather state a copper
+    // chest's hinge depends on is the block's own, so the template names it.
+    let base = horizon_client::block_entity_types::factory_block(block)
         .trim_start_matches("minecraft:")
         .trim_start_matches("waxed_");
     match (base.ends_with("copper_chest"), base.split('_').next(), open) {
@@ -106,9 +108,6 @@ pub fn chest_hinge_sound(block: &str, open: bool) -> &'static str {
         (true, _, true) => "minecraft:block.copper_chest.open",
         (true, _, false) => "minecraft:block.copper_chest.close",
     }
-}
-fn is_chest_block(name: &str) -> bool {
-    matches!(name, "minecraft:chest" | "minecraft:trapped_chest") || name.ends_with("copper_chest")
 }
 /// `CopperGolemAi.TRANSPORT_ITEM_SOURCE_BLOCK` / `_DESTINATION_BLOCK`.
 fn wanted(w: &MobWorld, m: &Mob, name: &str) -> bool {
@@ -446,7 +445,10 @@ impl Transport {
         let unchanged = matches!(
             w.world.block_entities.get(&(t.pos[0], t.pos[1], t.pos[2])),
             Some(BlockEntity::Chest(_))
-        ) && is_chest_block(&name_at(w, t.pos));
+        ) && w
+            .facts
+            .get(w.world.block(t.pos[0], t.pos[1], t.pos[2]))
+            .has_class("ChestBlock");
         if !(wanted(w, m, &t.name) && unchanged) || blocked(w, t.pos) {
             return false;
         }
