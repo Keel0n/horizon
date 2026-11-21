@@ -2187,7 +2187,10 @@ impl Streaming {
             // of those: still requested, it is not retried until the sweep
             // drops its mark, so it can never come — counting it as
             // forthcoming held every higher-ranked chunk back forever
-            // (#18403).
+            // (#18403). A sweep may still drop the mark and the column
+            // generate on the retry: its decoration then goes out of
+            // vanilla's order, a path vanilla never reaches (a failed
+            // generation throws there).
             let waits_for = |s: &Self, x: i32, z: i32| {
                 wants(s, x, z)
                     && (-1..=1).all(|dz| {
@@ -2818,7 +2821,7 @@ impl Streaming {
                         .is_none_or(|done| done.is_empty())
                 {
                     log::warn!(
-                        "Horizon: the forced chunk ({x}, {z}) did not generate; it stays unloaded"
+                        "Horizon: the forced chunk ({x}, {z}) cannot progress; it stays unloaded"
                     );
                     break;
                 }
