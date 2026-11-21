@@ -10134,6 +10134,16 @@ impl Game<'_> {
                     {
                         self.smooth_camera_action();
                     }
+                    // `key.fullbright` is Horizon's, unbound by default: no vanilla mapping
+                    // translates it, so its press is taken here, before the screen and the
+                    // mappings hear it.
+                    if event.state == ElementState::Pressed
+                        && !event.repeat
+                        && horizon_client::keybinds::key_name(key)
+                            .is_some_and(|n| self.fullbright_key_press(n))
+                    {
+                        return Ok(());
+                    }
                     // ScreenEvent.KeyPressed.Post / KeyReleased.Post: no screen arm
                     // took the key, so the open screen's `keyPressed` returned
                     // false; a cancel marks it handled and the game's own key
