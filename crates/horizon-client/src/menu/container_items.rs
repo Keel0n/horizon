@@ -25,10 +25,7 @@ pub fn vanilla_fits_inside_container_items_for_item(
     facts: &crate::blocks::BlockFacts,
     stack: &ItemStack,
 ) -> bool {
-    fits_inside_container_items_of_block(
-        facts,
-        items.get(&stack.item).and_then(|info| info.block),
-    )
+    fits_inside_container_items_of_block(facts, items.get(&stack.item).and_then(|info| info.block))
 }
 
 /// Vanilla's `Item.canFitInsideContainerItems` where the caller has no item table and so
@@ -48,7 +45,19 @@ pub fn vanilla_fits_inside_container_items(stack: &ItemStack) -> bool {
 /// then the parts of the stack's item. An item with no such part keeps vanilla's answer at
 /// the cost of one table lookup. `context` is the loop the menu or the insert runs in.
 pub fn fits_inside_container_items(context: &LoopContext, stack: &ItemStack) -> bool {
-    let mut fits = vanilla_fits_inside_container_items(stack);
+    fits_inside_container_items_from(context, stack, vanilla_fits_inside_container_items(stack))
+}
+
+/// [`fits_inside_container_items`] where the caller already knows vanilla's answer: a
+/// caller with the item table asks the block the stack's item places
+/// ([`vanilla_fits_inside_container_items_for_item`]) and the parts of the stack's item may
+/// still change it.
+pub fn fits_inside_container_items_from(
+    context: &LoopContext,
+    stack: &ItemStack,
+    vanilla: bool,
+) -> bool {
+    let mut fits = vanilla;
     crate::native_client_hooks::can_fit_inside_container_items(context, stack, &mut fits);
     fits
 }
