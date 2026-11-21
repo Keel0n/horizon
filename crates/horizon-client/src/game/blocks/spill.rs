@@ -890,7 +890,6 @@ impl GameLevel<'_> {
         self.positions.hoppers.remove(&key);
         self.world.block_names.remove(&key);
         self.world.forget_block_entity_source(key);
-        let name = self.facts.get(old).name.clone();
         let kind = match &entity {
             // BaseContainerBlockEntity.preRemoveSideEffects: Containers.dropContents.
             Some(BlockEntity::Mod(m))
