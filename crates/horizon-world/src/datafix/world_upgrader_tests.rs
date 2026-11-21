@@ -683,7 +683,8 @@ fn an_aliased_staging_folder_keeps_the_live_region() {
             false
         }),
     );
-    let mut upgrader = RegionStorageUpgrader::init(builder, progress.clone(), 0, OVERWORLD, &world.0);
+    let mut upgrader =
+        RegionStorageUpgrader::init(builder, progress.clone(), 0, OVERWORLD, &world.0);
     upgrader.upgrade();
 
     for pos in &positions {
@@ -712,7 +713,9 @@ fn a_staging_folder_that_is_the_live_one_is_left_alone() {
         .collect();
     write_chunks(&staging.join("r.0.0.mca"), &chunks);
     if let Err(e) = link_dir(&live, &staging) {
-        eprintln!("a_staging_folder_that_is_the_live_one_is_left_alone: cannot create the link: {e}");
+        eprintln!(
+            "a_staging_folder_that_is_the_live_one_is_left_alone: cannot create the link: {e}"
+        );
         return;
     }
 
