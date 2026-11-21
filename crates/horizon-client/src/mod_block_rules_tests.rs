@@ -73,17 +73,39 @@ fn a_content_blocks_rules_come_from_its_template_and_never_from_its_id() {
             .default_state(name)
             .unwrap_or_else(|| panic!("{name}"))
     };
-    // `ChestBlock`: the template's class, and copper chests are chests.
-    assert!(behaviours.is_chest_block(state("fieldtest:crate_of_stuff")));
-    assert!(behaviours.is_chest_block(state("minecraft:oxidized_copper_chest")));
-    // The stone block named `fake_copper_chest` is no chest, whatever its name.
-    assert!(!behaviours.is_chest_block(state("fieldtest:fake_copper_chest")));
-    // `ShulkerBoxBlockEntity`'s slots follow the shulker box template.
-    assert!(behaviours.is_shulker_box(state("fieldtest:lockbox")));
-    assert!(!behaviours.is_shulker_box(state("fieldtest:fake_copper_chest")));
-    // `AnvilBlock.falling` hurts by distance for the anvil template, and
-    // unchanged anvils keep their damage source.
+    // What breaking the block does with its entity, which is what the rules
+    // above decide: a chest-template block drops its 27 slots, a shulker box
+    // keeps its contents for the dropped item, and the stone block named
+    // `fake_copper_chest` has nothing to drop.
+    use horizon_world::level::removal::{PreRemove, pre_remove};
+    let contents = |slots| PreRemove::Contents {
+        slots,
+        furnace: false,
+    };
+    assert_eq!(
+        pre_remove(&behaviours, state("fieldtest:crate_of_stuff")),
+        contents(27)
+    );
+    assert_eq!(
+        pre_remove(&behaviours, state("minecraft:oxidized_copper_chest")),
+        contents(27)
+    );
+    assert_eq!(
+        pre_remove(&behaviours, state("fieldtest:lockbox")),
+        PreRemove::ShulkerBox
+    );
+    assert_eq!(
+        pre_remove(&behaviours, state("fieldtest:fake_copper_chest")),
+        PreRemove::Nothing
+    );
+    // A falling anvil's damage source asks the class, its saved `HurtEntities`
+    // default and its wear ask the tag: vanilla's three anvils answer both, and
+    // a content block of the anvil template is only the class until it adds
+    // itself to `minecraft:anvil`.
+    for anvil in ["minecraft:anvil", "minecraft:chipped_anvil", "minecraft:damaged_anvil"] {
+        assert!(behaviours.is_anvil(state(anvil)), "{anvil}");
+        assert!(behaviours.is_anvil_tag(state(anvil)), "{anvil}");
+    }
     assert!(behaviours.is_anvil(state("fieldtest:hammer")));
-    assert!(behaviours.is_anvil(state("minecraft:chipped_anvil")));
-    assert!(!behaviours.is_anvil(state("fieldtest:crate_of_stuff")));
+    assert!(!behaviours.is_anvil_tag(state("fieldtest:hammer")));
 }

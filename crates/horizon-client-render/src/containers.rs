@@ -879,24 +879,7 @@ pub fn is_vanilla_shulker_box_item(item: &str) -> bool {
     let Some(name) = item.strip_prefix("minecraft:") else {
         return false;
     };
-    const COLOURS: [&str; 16] = [
-        "white",
-        "orange",
-        "magenta",
-        "light_blue",
-        "yellow",
-        "lime",
-        "pink",
-        "gray",
-        "light_gray",
-        "cyan",
-        "purple",
-        "blue",
-        "brown",
-        "green",
-        "red",
-        "black",
-    ];
+    const COLOURS: [&str; 16] = crate::block_entity_render::DYES.map(|(dye, _)| dye);
     name == "shulker_box"
         || name
             .strip_suffix("_shulker_box")
@@ -938,7 +921,7 @@ impl ChestHalf<'_> {
     /// same way. Copper chests in different weathering states never join
     /// (`CopperChestBlock` keeps both halves in one state instead). Whether
     /// either block is a `ChestBlock` at all is the caller's
-    /// [`is_chest_block`], as it is vanilla's.
+    /// `Behaviours::is_chest_block`, as it is vanilla's.
     pub fn pairs_with(&self, other: &ChestHalf) -> bool {
         self.kind != "single"
             && other.block == self.block
@@ -1082,6 +1065,16 @@ mod tests {
         assert!(is_vanilla_shulker_box_item("minecraft:red_shulker_box"));
         assert!(is_vanilla_shulker_box_item("minecraft:shulker_box"));
         assert!(!is_vanilla_shulker_box_item("minecraft:shulker_shell"));
+        // The slots a container's block entity holds, which a chest's, a
+        // barrel's and a shulker box's differ on; a content id ending in a
+        // vanilla name gets none of them.
+        assert_eq!(container_size("minecraft:oxidized_copper_chest"), Some(27));
+        assert_eq!(container_size("minecraft:barrel"), Some(27));
+        assert_eq!(container_size("minecraft:hopper"), Some(5));
+        assert_eq!(container_size("minecraft:red_shulker_box"), Some(27));
+        assert_eq!(container_size("minecraft:furnace"), None);
+        assert_eq!(container_size("fieldtest:my_copper_chest"), None);
+        assert!(BlockEntity::for_block("fieldtest:my_copper_chest").is_none());
     }
 
     /// a client that isn't Horizon's is sent vanilla's menu types only.

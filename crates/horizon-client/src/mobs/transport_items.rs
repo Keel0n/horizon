@@ -89,6 +89,13 @@ fn name_at(w: &MobWorld, p: [i32; 3]) -> String {
         .name
         .to_string()
 }
+/// `ChestBlock`, by the block's class chain: the mob side reads the same chain
+/// the engine's `Behaviours::is_chest_block` answers for.
+fn is_chest_block(w: &MobWorld, p: [i32; 3]) -> bool {
+    w.facts
+        .get(w.world.block(p[0], p[1], p[2]))
+        .has_class("ChestBlock")
+}
 /// `ChestBlock.getOpenChestSound` / `getCloseChestSound` of a chest block: a
 /// copper chest's comes from `CopperChestBlock.getHingeSound`, by its weather
 /// state (a waxed chest's is its state's). Only a `ChestBlock` has them
@@ -353,8 +360,7 @@ fn open_or_close(cx: &mut Bx, p: [i32; 3], open: bool, mob: u32) {
             at[0] += f64::from(o[0] - p[0]) * 0.5;
             at[2] += f64::from(o[2] - p[2]) * 0.5;
         }
-        let state = w.world.block(p[0], p[1], p[2]);
-        let is_chest = w.facts.get(state).has_class("ChestBlock");
+        let is_chest = is_chest_block(w, p);
         // `ChestBlockEntity.playSound`: only a `ChestBlock` has a hinge sound,
         // so only it draws the pitch.
         if let Some(sound) = chest_hinge_sound(&name_at(w, p), is_chest, open) {
@@ -457,10 +463,7 @@ impl Transport {
         let unchanged = matches!(
             w.world.block_entities.get(&(t.pos[0], t.pos[1], t.pos[2])),
             Some(BlockEntity::Chest(_))
-        ) && w
-            .facts
-            .get(w.world.block(t.pos[0], t.pos[1], t.pos[2]))
-            .has_class("ChestBlock");
+        ) && is_chest_block(w, t.pos);
         if !(wanted(w, m, &t.name) && unchanged) || blocked(w, t.pos) {
             return false;
         }

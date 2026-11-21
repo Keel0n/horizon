@@ -7,7 +7,7 @@ use super::api_values::TryIntoApi;
 use super::{Game, GameLevel, Screen};
 use horizon_client::{
     block_entity_item, block_entity_nbt,
-    containers::{Banner, BlockEntity, is_shulker_box_block as is_shulker_box},
+    containers::{Banner, BlockEntity},
     furnace::FurnaceCooking,
     item_data,
     items::{BlockLootRoll, ItemStack},
@@ -80,7 +80,9 @@ impl Pending {
         // the bees, and shulker tables the actual external lock. This is the
         // supported vanilla class policy, not a selected-table include filter.
         let include: &[&str] = match entity {
-            BlockEntity::Chest(_) if is_shulker_box(block) => &["minecraft:lock"],
+            BlockEntity::Chest(_) if horizon_client::containers::is_shulker_box_block(block) => {
+                &["minecraft:lock"]
+            }
             BlockEntity::Skull(_) if block.starts_with("minecraft:player_") => &[
                 "minecraft:profile",
                 "minecraft:note_block_sound",
@@ -95,7 +97,7 @@ impl Pending {
         if !include.is_empty() {
             let mut saved =
                 save::block_entity_encode::encode((pos[0], pos[1], pos[2]), entity, block);
-            if is_shulker_box(block)
+            if horizon_client::containers::is_shulker_box_block(block)
                 && let (Some(lock), Tag::Compound(tag)) = (lock, &mut saved)
             {
                 tag.insert("lock".into(), lock.clone());
@@ -110,7 +112,7 @@ impl Pending {
                 self.copied.insert(pos, (item, patch));
             }
         }
-        if is_shulker_box(block)
+        if horizon_client::containers::is_shulker_box_block(block)
             && let BlockEntity::Chest(items) = entity
         {
             let kept = items
@@ -123,7 +125,7 @@ impl Pending {
     }
     /// Copy what was remembered for `pos` into a drop of the block.
     pub(super) fn attach(&mut self, pos: [i32; 3], stack: &mut ItemStack) {
-        if is_shulker_box(&stack.item)
+        if !horizon_client::menu::container_items::vanilla_fits_inside_container_items(stack)
             && let Some(contents) = self.shulker.remove(&pos)
             && !contents.is_empty()
         {

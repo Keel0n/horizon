@@ -266,7 +266,7 @@ impl Game<'_> {
                 stuck: Vec3::ZERO,
                 damage: horizon_client::falling_block::Damage::from_nbt(
                     &tag,
-                    self.res.behaviours().is_anvil(state),
+                    self.res.behaviours().is_anvil_tag(state),
                 ),
                 saved: Some(Box::new((uuid, tag.clone()))),
             });

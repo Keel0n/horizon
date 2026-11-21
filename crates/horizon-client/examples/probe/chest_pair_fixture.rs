@@ -41,7 +41,13 @@ fn case(line: &str) -> Option<String> {
         i32::try_from(case["at"][0].as_i64()?).ok()?,
         i32::try_from(case["at"][1].as_i64()?).ok()?,
     );
-    if !case["state"].is_string() {
+    /// The fixture only asks about `ChestBlock`s (`ChestBlock.combine`'s own gate):
+/// vanilla's are the blocks whose block entity is a chest's.
+    let is_chest = matches!(
+        horizon_client::containers::block_entity_type(name),
+        Some("minecraft:chest" | "minecraft:trapped_chest")
+    );
+    if !is_chest {
         return None;
     }
     let own = half(name, &props)?;

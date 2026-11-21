@@ -1456,6 +1456,13 @@ impl Behaviours {
     pub fn is_anvil(&self, state: BlockStateId) -> bool {
         self.data(state).is(classes::Class::Anvil)
     }
+    /// Java's `state.is(BlockTags.ANVIL)`: the datapack tag, which a content
+    /// block joins only by adding itself to it. Vanilla reads the tag for a
+    /// falling block's saved `HurtEntities` default and for its wear chance.
+    pub fn is_anvil_tag(&self, state: BlockStateId) -> bool {
+        self.tag("minecraft:anvil")
+            .is_some_and(|anvils| anvils.contains(self.block(state)))
+    }
     pub fn block(&self, state: BlockStateId) -> BlockId {
         self.table.block(state)
     }

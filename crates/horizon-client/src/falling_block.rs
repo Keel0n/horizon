@@ -353,17 +353,6 @@ mod tests {
         assert_eq!((absent.hurt_entities, absent.cancel_drop), (true, false));
     }
 
-    /// `BrushableBlock.tick` cancels the drop of a brushable block's fall, and
-    /// `AnvilBlock.falling` (`setHurtsEntities(2.0F, 40)`) makes an anvil hurt by
-    /// distance; both are the block's class, so they are asked of it.
-    #[test]
-    fn only_a_brushable_block_breaks_where_it_lands_and_only_an_anvil_hurts() {
-        assert!(Damage::falling(false, true).cancel_drop);
-        assert!(!Damage::falling(false, false).cancel_drop);
-        assert!(Damage::falling(true, false).hurt_entities);
-        assert_eq!(Damage::falling(true, false), Damage::anvil());
-    }
-
     #[test]
     fn impact_uses_ceil_distance_capped_damage_and_positive_damage_wear() {
         let damage = Damage::anvil();

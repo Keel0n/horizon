@@ -262,8 +262,9 @@ impl Game<'_> {
                 }
             }
             // `this.random.nextFloat()`: the falling block's own (unseeded)
-            // random, not the level's.
-            if anvil
+            // random, not the level's. The wear asks `BlockTags.ANVIL`
+            // (`FallingBlockEntity.java:274`), the damage source the class.
+            if self.res.behaviours().is_anvil_tag(block.state)
                 && impact.wear_chance > 0.0
                 && horizon_client::random_source::entity().next_float() < impact.wear_chance
                 && let Some(mut state) = self.pack.assets.registry.state(block.state).cloned()

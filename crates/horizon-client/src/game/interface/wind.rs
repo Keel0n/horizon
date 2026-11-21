@@ -173,41 +173,84 @@ pub(super) fn reverse(p: &mut Projectile) {
 pub(super) fn above_the_top(shape: LevelShape, y: f64) -> bool {
     y >= f64::from(shape.max_y() + 30)
 }
-/// Whether a block reacts to a wind charge's burst by being used
-/// (`BlockBehaviour.onExplosionHit`'s `TRIGGER_BLOCK` overrides): a
-/// `DoorBlock` or `TrapDoorBlock` asks its `BlockSetType.canOpenByWindCharge`
-/// (an iron door or trapdoor answers false, a copper one true), and a
-/// `FenceGateBlock`, `ButtonBlock`, `LeverBlock` or `BellBlock` always reacts.
-/// Vanilla asks the class: a content block of one of those templates counts
-/// whatever its id, and a block named `..._door` alone does not.
-fn triggers(data: &horizon_world::level::data::BlockData) -> bool {
-    use horizon_world::level::classes::Class;
-    if data.is(Class::Door) || data.is(Class::TrapDoor) {
-        return data
-            .set_type
-            .as_ref()
-            .is_some_and(|t| t.can_open_by_wind_charge);
-    }
-    data.is(Class::FenceGate)
-        || data.is(Class::Button)
-        || data.is(Class::Lever)
-        || data.is(Class::Bell)
+/// The classes whose own `use`/`onExplosionHit` flips them, resolved from a
+/// block's data (vanilla asks the class, never the id). A door and a trapdoor
+/// keep the two `BlockSetType` flags vanilla asks of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flippable {
+    Door { by_hand: bool, by_wind_charge: bool },
+    FenceGate,
+    Button,
+    Lever,
+    Bell,
+    Cauldron,
 }
 
-/// The blocks a player's hand flips as it uses them, which a guest's client
-/// predicts at once (its own click, before the server's changes arrive): a
-/// door or trapdoor whose `BlockSetType.canOpenByHand`, a fence gate, a lever,
-/// a button or a cauldron. The same class test [`triggers`] runs, asking the
-/// hand's flag instead of the burst's.
-pub(in crate::game) fn hand_operated(data: &horizon_world::level::data::BlockData) -> bool {
+/// [`Flippable`] of a block, or None when neither a hand nor a burst acts on it.
+fn flippable(data: &horizon_world::level::data::BlockData) -> Option<Flippable> {
     use horizon_world::level::classes::Class;
     if data.is(Class::Door) || data.is(Class::TrapDoor) {
-        return data.set_type.as_ref().is_some_and(|t| t.can_open_by_hand);
+        let set = data.set_type.as_ref();
+        return Some(Flippable::Door {
+            by_hand: set.is_some_and(|t| t.can_open_by_hand),
+            by_wind_charge: set.is_some_and(|t| t.can_open_by_wind_charge),
+        });
     }
-    data.is(Class::FenceGate)
-        || data.is(Class::Button)
-        || data.is(Class::Lever)
-        || data.is(Class::AbstractCauldron)
+    if data.is(Class::FenceGate) {
+        return Some(Flippable::FenceGate);
+    }
+    if data.is(Class::Button) {
+        return Some(Flippable::Button);
+    }
+    if data.is(Class::Lever) {
+        return Some(Flippable::Lever);
+    }
+    if data.is(Class::Bell) {
+        return Some(Flippable::Bell);
+    }
+    if data.is(Class::AbstractCauldron) {
+        return Some(Flippable::Cauldron);
+    }
+    None
+}
+
+impl Flippable {
+    /// `BlockBehaviour.onExplosionHit` for a `TRIGGER_BLOCK` blast: a door or
+    /// trapdoor asks `BlockSetType.canOpenByWindCharge` (an iron one answers
+    /// false, a copper one true), a fence gate, button, lever or bell always
+    /// reacts, and a cauldron is no burst target.
+    fn by_wind_charge(self) -> bool {
+        match self {
+            Self::Door {
+                by_wind_charge, ..
+            } => by_wind_charge,
+            Self::FenceGate | Self::Button | Self::Lever | Self::Bell => true,
+            Self::Cauldron => false,
+        }
+    }
+    /// Whether a player's hand flips it as it uses the block, which a guest's
+    /// client predicts at once (its own click, before the server's changes
+    /// arrive): a door or trapdoor asks `BlockSetType.canOpenByHand` (an iron
+    /// one has no hand use), a fence gate, lever, button or cauldron reacts,
+    /// and a bell rings without flipping.
+    fn by_hand(self) -> bool {
+        match self {
+            Self::Door { by_hand, .. } => by_hand,
+            Self::FenceGate | Self::Button | Self::Lever | Self::Cauldron => true,
+            Self::Bell => false,
+        }
+    }
+}
+
+/// Whether a block reacts to a wind charge's burst by being used.
+fn triggers(data: &horizon_world::level::data::BlockData) -> bool {
+    flippable(data).is_some_and(Flippable::by_wind_charge)
+}
+
+/// The blocks a player's hand flips, which a guest's client predicts: the same
+/// classes [`triggers`] walks, asking the hand's flag instead of the burst's.
+pub(in crate::game) fn hand_operated(data: &horizon_world::level::data::BlockData) -> bool {
+    flippable(data).is_some_and(Flippable::by_hand)
 }
 impl Game<'_> {
     /// `Player.itemAttackInteraction` applies trigger-only held-item effects
@@ -887,7 +930,7 @@ impl Game<'_> {
         if data.is(Class::Door) && prop(self, "half").as_deref() != Some("lower") {
             return Ok(());
         }
-        if prop(self, "powered").as_deref() == Some("true") && &*name != "minecraft:lever" {
+        if prop(self, "powered").as_deref() == Some("true") && !data.is(Class::Lever) {
             return Ok(());
         }
         // FenceGateBlock.onExplosionHit toggles the gate without turning it
@@ -1013,6 +1056,31 @@ mod tests {
             let behaviours = horizon_world::level::Behaviours::load(registry, &root).ok()?;
             Some((registry, Box::leak(Box::new(behaviours))))
         })
+    }
+
+    /// The two answers of a block's own `use` and `onExplosionHit`, which need no
+/// resources: a hand flips a cauldron and a door whose set type allows hands,
+/// a burst opens a wooden or copper door and leaves a cauldron alone, and an
+/// iron door is no target of either.
+    #[test]
+    fn a_hand_and_a_burst_flip_different_blocks() {
+        let wooden = Flippable::Door {
+            by_hand: true,
+            by_wind_charge: true,
+        };
+        let iron = Flippable::Door {
+            by_hand: false,
+            by_wind_charge: false,
+        };
+        assert!(wooden.by_hand() && wooden.by_wind_charge());
+        assert!(!iron.by_hand() && !iron.by_wind_charge());
+        for block in [Flippable::FenceGate, Flippable::Button, Flippable::Lever] {
+            assert!(block.by_hand() && block.by_wind_charge(), "{block:?}");
+        }
+        // A cauldron fills from a use and never from a burst; a bell rings, so
+        // it is no hand flip.
+        assert!(Flippable::Cauldron.by_hand() && !Flippable::Cauldron.by_wind_charge());
+        assert!(Flippable::Bell.by_wind_charge() && !Flippable::Bell.by_hand());
     }
 
     /// A burst's block list is the block's class: a door or trapdoor asks its
