@@ -1840,7 +1840,7 @@ type DryPlace = (horizon_core::position::BlockPos, DryChanges);
 /// The class test lives with the wind charge's, which asks `BlockSetType.canOpenByWindCharge`
 /// of the same blocks.
 pub(super) fn hand_operated(data: &horizon_world::level::data::BlockData) -> bool {
-    crate::game::interface::wind::hand_operated(data)
+    crate::game::wind::hand_operated(data)
 }
 
 /// `InteractionHand` on the wire.

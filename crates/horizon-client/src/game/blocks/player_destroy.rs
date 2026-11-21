@@ -1,7 +1,7 @@
 //! The removal in a player's break (`ServerPlayerGameMode.destroyBlock`): the block's parts
 //! (`on_destroyed_by_player`, `IBlockExtension.onDestroyedByPlayer`) may take it over, and with
 //! none answering `playerWillDestroy` and `Level.removeBlock` are vanilla's.
-use super::{Game, storage};
+use super::Game;
 use horizon_client::{blocks::StateFacts, items::ItemStack};
 use horizon_core::position::BlockPos;
 use horizon_world::registry::BlockStateId;

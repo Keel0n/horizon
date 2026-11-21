@@ -880,7 +880,6 @@ impl Game<'_> {
         let id = &*facts.name;
         let name = id.trim_start_matches("minecraft:");
         let behaviours = self.res.behaviours();
-        let data = behaviours.data(state);
         match name {
             // BlockBehaviour.getMenuProvider.
             "crafting_table" | "enchanting_table" | "anvil" | "chipped_anvil" | "damaged_anvil"

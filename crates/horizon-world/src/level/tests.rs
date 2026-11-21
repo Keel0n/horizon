@@ -1437,6 +1437,32 @@ fn snowy_grass_and_chests_pair() {
     assert_eq!(w.prop(BlockPos::new(3, 1, 0), "type"), "single");
 }
 
+/// `FallingBlock.tick` runs the block's own `falling` hook: `AnvilBlock.falling`
+/// is `setHurtsEntities(2.0F, 40)`, so a falling anvil carries the distance
+/// damage and a falling sand block does not. Vanilla asks the class, not the
+/// name.
+#[test]
+fn a_falling_anvil_carries_its_distance_damage_and_sand_does_not() {
+    let mut w = world!();
+    let anvil = w.id("anvil", &[("facing", "north")]);
+    let sand = w.id("sand", &[]);
+    w.put(BlockPos::new(0, 5, 0), anvil);
+    w.put(BlockPos::new(2, 5, 0), sand);
+    w.tick();
+    let hurt = |state| {
+        w.level.events.iter().find_map(|e| match e {
+            LevelEvent::FallingBlock {
+                state: s,
+                hurt_per_distance,
+                ..
+            } if *s == state => Some(*hurt_per_distance),
+            _ => None,
+        })
+    };
+    assert_eq!(hurt(anvil), Some(Some(2.0)));
+    assert_eq!(hurt(sand), Some(None));
+}
+
 #[test]
 fn sand_falls_and_concrete_solidifies() {
     let mut w = world!();

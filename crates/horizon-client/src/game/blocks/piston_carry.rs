@@ -92,7 +92,7 @@ impl GameLevel<'_> {
             .state(from_state)
             .and_then(|state| {
                 super::storage::chest_connected_pos(
-                    self.res.behaviours(),
+                    self.behaviours,
                     state,
                     from_state,
                     [from.0, from.1, from.2],

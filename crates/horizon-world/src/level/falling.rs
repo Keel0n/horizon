@@ -48,7 +48,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // `fall`: `AnvilBlock.falling` is `setHurtsEntities(2.0F, 40)`, so
             // an anvil of any class inheriting it hurts by distance where a
             // name that only ends in `anvil` would not.
-            let hurt = self.instance_of(state, Class::Anvil).then_some(2.0);
+            let hurt = self.b.instance_of(state, Class::Anvil).then_some(2.0);
             self.falling_block_fall(pos, state, hurt);
         }
     }

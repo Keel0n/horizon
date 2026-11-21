@@ -990,6 +990,73 @@ mod wind_dragon_tests;
 mod tests {
     use super::*;
 
+    /// The prepared vanilla data, read once: the block classes and their set
+    /// types. None without it (CI runs without the game's files).
+    fn prepared() -> Option<(
+        &'static horizon_world::registry::BlockRegistry,
+        &'static horizon_world::level::Behaviours,
+    )> {
+        static DATA: std::sync::OnceLock<
+            Option<(
+                &'static horizon_world::registry::BlockRegistry,
+                &'static horizon_world::level::Behaviours,
+            )>,
+        > = std::sync::OnceLock::new();
+        *DATA.get_or_init(|| {
+            let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.local/horizon-client/26.3");
+            if !root.join("block-behaviours.json").exists() {
+                return None;
+            }
+            let assets = horizon_client::assets::Assets::load(&root).ok()?;
+            let registry = assets.registry;
+            let behaviours = horizon_world::level::Behaviours::load(registry, &root).ok()?;
+            Some((registry, Box::leak(Box::new(behaviours))))
+        })
+    }
+
+    /// A burst's block list is the block's class: a door or trapdoor asks its
+    /// `BlockSetType.canOpenByWindCharge` (iron's is false, wood's and copper's
+    /// true) and a fence gate, button, lever or bell always reacts. Vanilla
+    /// asks the class, so a content block of one of those templates counts and
+    /// a name that only ends in `_door` does not.
+    #[test]
+    fn a_burst_acts_on_classes_and_the_set_types_wind_charge_flag() {
+        let Some((registry, behaviours)) = prepared() else {
+            return;
+        };
+        let triggers = |name: &str| {
+            let state = registry
+                .default_state(name)
+                .unwrap_or_else(|| panic!("{name}"));
+            super::triggers(behaviours.data(state))
+        };
+        assert!(triggers("minecraft:oak_door"));
+        assert!(triggers("minecraft:copper_trapdoor"));
+        assert!(!triggers("minecraft:iron_door"));
+        assert!(!triggers("minecraft:iron_trapdoor"));
+        assert!(triggers("minecraft:oak_fence_gate"));
+        assert!(triggers("minecraft:stone_button"));
+        assert!(triggers("minecraft:lever"));
+        assert!(triggers("minecraft:bell"));
+        assert!(!triggers("minecraft:stone"));
+        // The flag itself: the same list by hand asks `canOpenByHand`.
+        assert!(super::hand_operated(
+            behaviours.data(registry.default_state("minecraft:oak_door").unwrap())
+        ));
+        assert!(!super::hand_operated(
+            behaviours.data(registry.default_state("minecraft:iron_door").unwrap())
+        ));
+        assert!(super::hand_operated(
+            behaviours.data(registry.default_state("minecraft:water_cauldron").unwrap())
+        ));
+        // A cauldron is no burst target and a bell is no hand flip.
+        assert!(!triggers("minecraft:water_cauldron"));
+        assert!(!super::hand_operated(
+            behaviours.data(registry.default_state("minecraft:bell").unwrap())
+        ));
+    }
+
     /// ServerLevel ticks entities in join order: an orb, falling block or TNT that
     /// joined before the charge has moved by the time the charge bursts, so the
     /// push belongs to its next tick; one that joined after has not.

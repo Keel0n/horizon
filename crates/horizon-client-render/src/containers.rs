@@ -1033,6 +1033,57 @@ mod tests {
         }
     }
 
+    /// A container's title, menu and slots are its block entity's: a copper chest
+    /// holds a `minecraft:chest` entity (`BlockEntityTypes.CHEST` takes the
+    /// whole copper family), and an id that only ends in a vanilla container's
+    /// name belongs to no vanilla block entity at all.
+    #[test]
+    fn a_container_is_recognised_by_its_block_entity_type_not_by_its_suffix() {
+        for (block, name_key, menu) in [
+            ("minecraft:chest", "container.chest", "minecraft:generic_9x3"),
+            ("minecraft:oxidized_copper_chest", "container.chest", "minecraft:generic_9x3"),
+            (
+                "minecraft:waxed_weathered_copper_chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
+            (
+                "minecraft:trapped_chest",
+                "container.chest",
+                "minecraft:generic_9x3",
+            ),
+            (
+                "minecraft:red_shulker_box",
+                "container.shulkerBox",
+                "minecraft:shulker_box",
+            ),
+            ("minecraft:hopper", "container.hopper", "minecraft:hopper"),
+            (
+                "minecraft:dispenser",
+                "container.dispenser",
+                "minecraft:generic_3x3",
+            ),
+        ] {
+            assert_eq!(default_name_key(block), Some(name_key), "{block}");
+            assert_eq!(block_menu_type(block), Some(menu), "{block}");
+        }
+        // `BlockEntityTypes.validBlocks` has no entry for a content id, so a
+        // name that merely ends in a vanilla one is not that vanilla block.
+        for block in [
+            "fieldtest:my_copper_chest",
+            "fieldtest:waxed_red_shulker_box",
+            "fieldtest:super_hopper",
+        ] {
+            assert_eq!(block_entity_type(block), None, "{block}");
+            assert_eq!(default_name_key(block), None, "{block}");
+            assert_eq!(block_menu_type(block), None, "{block}");
+        }
+        assert!(!is_vanilla_shulker_box_item("fieldtest:red_shulker_box"));
+        assert!(is_vanilla_shulker_box_item("minecraft:red_shulker_box"));
+        assert!(is_vanilla_shulker_box_item("minecraft:shulker_box"));
+        assert!(!is_vanilla_shulker_box_item("minecraft:shulker_shell"));
+    }
+
     /// a client that isn't Horizon's is sent vanilla's menu types only.
     #[test]
     fn a_mod_menu_type_reaches_horizon_clients_only() {

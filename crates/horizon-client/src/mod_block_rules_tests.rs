@@ -1,0 +1,89 @@
+//! A content block's vanilla rules come from its template: which block entity a
+//! container's title, menu and slots are asked about, and which classes a
+//! falling anvil, a shulker box's slots and a wind-charged door are asked about
+//! (#18502). A block whose id happens to end in a vanilla one's name is not that
+//! block, and a block of a vanilla template with an id of its own still is.
+use crate::mod_content::ContentMod;
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
+
+/// The vanilla data plus a content mod whose blocks copy templates only: a
+/// chest, a shulker box, an anvil and a stone block whose id ends in a vanilla
+/// chest's name. `None` without the prepared vanilla data (CI).
+fn resources() -> Option<&'static Path> {
+    static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let base =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.local/horizon-client/26.3");
+        if !base.join("block-behaviours.json").exists() {
+            return None;
+        }
+        let scratch = std::env::temp_dir().join(format!("block-rules-{}", std::process::id()));
+        let dir = scratch.join("mod");
+        let mut files = vec![(
+            "horizon-mod.toml".to_owned(),
+            "id = \"fieldtest\"\nname = \"Field test\"\nversion = \"1.0\"\napi = \"0.2\"\ncapabilities = [\"registries\"]\n".to_owned(),
+        )];
+        for (id, template) in [
+            ("crate_of_stuff", "chest"),
+            ("lockbox", "shulker_box"),
+            ("hammer", "anvil"),
+            ("fake_copper_chest", "stone"),
+        ] {
+            files.push((
+                format!("data/fieldtest/horizon/block/{id}.json"),
+                format!(r#"{{"template":"minecraft:{template}"}}"#),
+            ));
+        }
+        for (name, text) in files {
+            let path = dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let package = horizon_mod_package::Package::read(&dir).unwrap();
+        let content = horizon_mod_package::content::Content::read(&dir, &package.manifest).unwrap();
+        let out = scratch.join("resources");
+        let mods = [ContentMod {
+            id: "fieldtest".into(),
+            content,
+            jars: Vec::new(),
+        }];
+        let inventory = horizon_mod_package::enabled::EnabledMods::new(
+            mods.iter()
+                .map(|package| (package.id.clone(), mod_api::Side::Both)),
+        );
+        crate::mod_content::build(&base, Path::new(""), &mods, &out, &inventory).unwrap();
+        Some(out)
+    })
+    .as_deref()
+}
+
+#[test]
+fn a_content_blocks_rules_come_from_its_template_and_never_from_its_id() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = crate::assets::Assets::load(root).unwrap();
+    let registry = assets.registry;
+    let behaviours = horizon_world::level::Behaviours::load(registry, root).unwrap();
+    let state = |name: &str| {
+        registry
+            .default_state(name)
+            .unwrap_or_else(|| panic!("{name}"))
+    };
+    // `ChestBlock`: the template's class, and copper chests are chests.
+    assert!(behaviours.is_chest_block(state("fieldtest:crate_of_stuff")));
+    assert!(behaviours.is_chest_block(state("minecraft:oxidized_copper_chest")));
+    // The stone block named `fake_copper_chest` is no chest, whatever its name.
+    assert!(!behaviours.is_chest_block(state("fieldtest:fake_copper_chest")));
+    // `ShulkerBoxBlockEntity`'s slots follow the shulker box template.
+    assert!(behaviours.is_shulker_box(state("fieldtest:lockbox")));
+    assert!(!behaviours.is_shulker_box(state("fieldtest:fake_copper_chest")));
+    // `AnvilBlock.falling` hurts by distance for the anvil template, and
+    // unchanged anvils keep their damage source.
+    assert!(behaviours.is_anvil(state("fieldtest:hammer")));
+    assert!(behaviours.is_anvil(state("minecraft:chipped_anvil")));
+    assert!(!behaviours.is_anvil(state("fieldtest:crate_of_stuff")));
+}
