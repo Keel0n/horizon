@@ -579,3 +579,41 @@ fn a_leftover_new_file_publishes_nothing_it_does_not_hold() {
     );
     assert_eq!(version_of(&file, kept), CURRENT);
 }
+
+/// A leftover that will not go stops its file. Windows only: a handle held
+/// without `FILE_SHARE_DELETE` makes the remove fail with a sharing violation
+/// while the write-open still gets in, which is the one way here to fail the
+/// remove and keep the open working. Writing into a leftover it could not
+/// remove keeps the leftover's header, whose chunk the world no longer has.
+#[cfg(windows)]
+#[test]
+fn a_leftover_that_will_not_go_stops_the_file() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let world = TempWorld::new("leftover-held");
+    let (kept, stale) = (ChunkPos::new(0, 0), ChunkPos::new(1, 0));
+    let file = world.folder(OVERWORLD, "entities").join("r.0.0.mca");
+    write_chunks(&file, &[(kept, entity_chunk(4000, 0, 0))]);
+    let leftover = world.folder(OVERWORLD, "new_entities").join("r.0.0.mca");
+    write_chunks(&leftover, &[(stale, entity_chunk(CURRENT, 1, 0))]);
+    // `FILE_SHARE_READ | FILE_SHARE_WRITE`, no `FILE_SHARE_DELETE`.
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(&leftover)
+        .unwrap();
+
+    let progress = run(&world, false, true);
+
+    assert!(progress.is_finished());
+    assert!(
+        read_chunk(&leftover, kept).is_none(),
+        "the run went on into a leftover it could not remove"
+    );
+    assert!(
+        read_chunk(&file, stale).is_none(),
+        "the leftover published a chunk the world does not have"
+    );
+    assert_eq!(version_of(&file, kept), 4000);
+    drop(held);
+}

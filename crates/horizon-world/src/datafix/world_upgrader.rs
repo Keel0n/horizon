@@ -392,12 +392,22 @@ impl RegionStorageUpgrader {
                     // Every chunk of the file is written again this run, so
                     // the recreate target is written whole: a header left by
                     // an interrupted run would publish a stub for a chunk this
-                    // run never wrote. A refusal here must not pass quietly:
-                    // the leftover would be published, the hole back.
+                    // run never wrote. A refusal here stops the file: written
+                    // into, the leftover keeps that header and
+                    // `on_file_finished` publishes it, the hole back. The
+                    // remove is not tried again, so a delete that a handle
+                    // still blocks stops the file instead of passing as a log
+                    // line.
                     if let Err(e) = fs::remove_file(&target)
                         && e.kind() != io::ErrorKind::NotFound
                     {
-                        eprintln!("Failed to remove a leftover region file: {e}");
+                        return Err(io::Error::new(
+                            e.kind(),
+                            format!(
+                                "cannot remove a leftover region file {}: {e}",
+                                target.display()
+                            ),
+                        ));
                     }
                 }
                 open.writer = Some((target.clone(), RegionFile::open_writable(&target, true)?));
