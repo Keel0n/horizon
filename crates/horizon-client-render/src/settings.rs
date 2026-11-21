@@ -730,7 +730,8 @@ impl Settings {
         };
         // Horizon's own bindings aren't in options.txt.
         next.keys.set("key.emote", self.keys.get("key.emote"));
-        next.keys.set("key.fullbright", self.keys.get("key.fullbright"));
+        next.keys
+            .set("key.fullbright", self.keys.get("key.fullbright"));
         Ok(next)
     }
     /// The `options.txt` text (Options.save).

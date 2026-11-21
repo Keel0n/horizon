@@ -366,9 +366,7 @@ impl Extras {
                 "sort" => e.sort = flag(e.sort),
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
                 EMOTE_KEY if value.starts_with("key.") => e.emote_key = value.to_owned(),
-                FULLBRIGHT_KEY if value.starts_with("key.") => {
-                    e.fullbright_key = value.to_owned()
-                }
+                FULLBRIGHT_KEY if value.starts_with("key.") => e.fullbright_key = value.to_owned(),
                 "chatAnimation" => e.chat_animation = flag(e.chat_animation),
                 "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
