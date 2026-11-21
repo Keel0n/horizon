@@ -2183,13 +2183,18 @@ impl Streaming {
             };
             // A wanted chunk holds back higher-ranked ones only if it can be
             // decorated: its 3x3 neighbourhood is (or will be) generated as
-            // protos, none of them already final.
+            // protos, none of them already final. A failed neighbour is none
+            // of those: still requested, it is not retried until the sweep
+            // drops its mark, so it can never come — counting it as
+            // forthcoming held every higher-ranked chunk back forever
+            // (#18403).
             let waits_for = |s: &Self, x: i32, z: i32| {
                 wants(s, x, z)
                     && (-1..=1).all(|dz| {
                         (-1..=1).all(|dx| {
                             let n = (x + dx, z + dz);
                             !world.chunks.contains_key(&n)
+                                && !s.failed.contains(&n)
                                 && (s.protos.contains_key(&n)
                                     || s.generating.contains(&n)
                                     || s.ranges().requested(n.0, n.1, true))
@@ -2792,6 +2797,25 @@ impl Streaming {
                 // failure mark clears.
                 if !self.chunks_in_flight()
                     && blocked_by_a_failed_generation(&self.failed, world, self.decorates, x, z)
+                {
+                    log::warn!(
+                        "Horizon: the forced chunk ({x}, {z}) did not generate; it stays unloaded"
+                    );
+                    break;
+                }
+                // Nothing can change the next pass's plan: no chunk is in
+                // flight, no save is out, nothing is queued, and the pump
+                // above took every finished job. A stage the column needs can
+                // no longer progress (a failed predecessor past the reach of
+                // the check above, for one), so waiting again would never end.
+                if !self.chunks_in_flight()
+                    && self.saving == 0
+                    && self.pending() == 0
+                    && self
+                        .shared
+                        .done
+                        .try_lock()
+                        .is_none_or(|done| done.is_empty())
                 {
                     log::warn!(
                         "Horizon: the forced chunk ({x}, {z}) did not generate; it stays unloaded"
