@@ -179,22 +179,19 @@ impl Renderer {
         let retained = frame.static_block_entities;
         let most = || (self.entity_batch.ray_ranges[2].1).max(Retained::most_quads(retained));
         let quads = most().next_power_of_two();
-        if entities {
-            match index_growth(&self.device, &self.queue, self.index_quads, quads) {
-                IndexGrowth::Fits => {}
-                IndexGrowth::Grown(indices, quads) => {
-                    self.index_quads = quads;
-                    self.indices = indices;
-                }
-                // No room for the bigger buffer: the old one is too small for these BLAS
-                // builds (`Entities::fit` cuts the ranges to the vertex binding only,
-                // `Retained::update` is not bounded at all), and they would read past its
-                // end — a validation error no error scope here holds. The frame's ray
-                // preparation is skipped instead, the indices and the scene stay as they
-                // were, and a later frame tries again (#15464), as a TLAS that can't grow
-                // keeps the frame's scene as it was.
-                IndexGrowth::NoRoom => return,
-            }
+        if entities
+            && !grown_for_ray_prep(
+                &self.device,
+                &self.queue,
+                &mut self.index_quads,
+                &mut self.indices,
+                quads,
+            )
+        {
+            // The old buffer is too small for this frame's BLAS builds (`Entities::fit` cuts
+            // the ranges to the vertex binding only, `Retained::update` is not bounded), so
+            // the frame builds none of them; a later frame tries again (#15464).
+            return;
         }
         let stream = entities.then_some(Stream {
             buffer: &self.entity_buffer,
@@ -258,35 +255,29 @@ impl Renderer {
     }
 }
 
-/// What a frame's ray preparation decides about the shared quad indices, wanting `wanted`
-/// quads while the buffer holds `have` (`Renderer::ray_prepare`): the entity stream's
-/// ray-only range and the retained sections are not bounded by what any pass drew, so they
-/// can want more quads than the buffers the draws grow hold (#15464).
-enum IndexGrowth {
-    /// The buffer there holds them: nothing is made.
-    Fits,
-    /// The device took a bigger buffer: it, and the quads it holds.
-    Grown(wgpu::Buffer, u32),
-    /// The device had no room for a bigger one: `grown_quad_indices` answers `None` only to
-    /// a lost device or one out of video memory — `frame_targets::made` panics on a
-    /// validation error without an out-of-memory one this frame.
-    NoRoom,
-}
-
-/// The frame's `IndexGrowth`, grown through `Renderer::grown_quad_indices` so a device that
-/// refuses the bigger buffer is reported, not panicked on over an invalid buffer (#15464).
-fn index_growth(
+/// Grows the shared quad indices to `quads`, which this frame's ray preparation needs more of
+/// than they hold: `false` where the device would not take the bigger buffer, and nothing
+/// changes — the frame traces with the scene it had, as a TLAS that can't grow keeps it
+/// (#15464).
+fn grown_for_ray_prep(
     device: &wgpu::Device,
     queue: &submit::Queue,
-    have: u32,
-    wanted: u32,
-) -> IndexGrowth {
-    if wanted <= have {
-        return IndexGrowth::Fits;
+    index_quads: &mut u32,
+    indices: &mut wgpu::Buffer,
+    quads: u32,
+) -> bool {
+    if quads <= *index_quads {
+        return true;
     }
-    match Renderer::grown_quad_indices(device, queue, wanted) {
-        Some(indices) => IndexGrowth::Grown(indices, wanted),
-        None => IndexGrowth::NoRoom,
+    // `None` answers only a lost device or one out of video memory: `frame_targets::made`
+    // panics on a validation error without an out-of-memory one this frame.
+    match Renderer::grown_quad_indices(device, queue, quads) {
+        Some(grown) => {
+            *index_quads = quads;
+            *indices = grown;
+            true
+        }
+        None => false,
     }
 }
 
@@ -2003,40 +1994,58 @@ mod tests {
         assert!(scene.is_some());
     }
 
-    /// #15464: a frame whose ray-only entities or retained sections want more quads than the
-    /// shared index buffer holds grows it before the BLAS builds. A device with no room for
-    /// the bigger buffer gives no buffer, so the caller skips the frame's ray preparation
-    /// and keeps the old buffer, too small for those builds; quads it already holds make
-    /// nothing.
+    /// #15464: where the device refuses the bigger index buffer, the old one — too small for
+    /// this frame's BLAS builds — stays untouched, so the frame skips tracing the
+    /// entity/retained layer instead of dying on a validation error.
     #[test]
-    fn ray_index_growth_makes_nothing_that_fits_and_reports_no_room() {
+    fn ray_index_growth_keeps_the_old_buffer_where_the_device_refuses() {
         let _gpu = crate::gfx::test_gpu::lock();
         let Some((_, device, queue)) = crate::gfx::test_gpu::optional_device() else {
             eprintln!("no GPU device: skipped");
             return;
         };
         let queue = crate::gfx::submit::Queue::new(queue, false);
-        // What the buffer holds is enough: nothing is made.
-        assert!(matches!(
-            index_growth(&device, &queue, 1 << 16, 1 << 16),
-            IndexGrowth::Fits
-        ));
-        assert!(matches!(
-            index_growth(&device, &queue, 1 << 16, 1 << 10),
-            IndexGrowth::Fits
-        ));
-        // Room for the bigger buffer: it is made, holding the wanted quads.
-        let IndexGrowth::Grown(indices, quads) = index_growth(&device, &queue, 1 << 10, 1 << 16)
-        else {
-            panic!("a device with room refused the index buffer");
-        };
-        assert_eq!(quads, 1 << 16);
-        assert_eq!(indices.size(), (1 << 16) * 6 * 4);
-        // No room for it: no buffer, so the caller skips the frame's ray preparation.
+        let mut index_quads = 1 << 10;
+        let mut indices =
+            crate::gfx::rt::query::quad_indices(&device, 1 << 10).expect("quad indices");
+        let old = indices.size();
+
+        // What the buffer holds is enough: nothing is made (the unspent `NO_ROOM` proves
+        // `made` never ran), and nothing changes.
         crate::gfx::frame_targets::NO_ROOM.set(1);
-        assert!(matches!(
-            index_growth(&device, &queue, 1 << 10, 1 << 16),
-            IndexGrowth::NoRoom
+        assert!(grown_for_ray_prep(
+            &device,
+            &queue,
+            &mut index_quads,
+            &mut indices,
+            1 << 8
         ));
+        assert_eq!(crate::gfx::frame_targets::NO_ROOM.get(), 1);
+        assert_eq!(index_quads, 1 << 10);
+        assert_eq!(indices.size(), old);
+
+        // No room for the bigger buffer: refused, and the old one is kept as it was.
+        crate::gfx::frame_targets::NO_ROOM.set(1);
+        assert!(!grown_for_ray_prep(
+            &device,
+            &queue,
+            &mut index_quads,
+            &mut indices,
+            1 << 16
+        ));
+        assert_eq!(index_quads, 1 << 10);
+        assert_eq!(indices.size(), old);
+        crate::gfx::frame_targets::NO_ROOM.set(0);
+
+        // Room for it: the buffer grows to the wanted quads.
+        assert!(grown_for_ray_prep(
+            &device,
+            &queue,
+            &mut index_quads,
+            &mut indices,
+            1 << 16
+        ));
+        assert_eq!(index_quads, 1 << 16);
+        assert_eq!(indices.size(), (1 << 16) * 6 * 4);
     }
 }
