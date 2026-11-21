@@ -464,10 +464,14 @@ impl Containers<'_> {
                         .get(&stack.item)
                         .is_some_and(|i| i.compostable.is_some())
             }
-            // ShulkerBoxBlockEntity.canPlaceItemThroughFace
-            Kind::Shulker => {
-                horizon_client::menu::container_items::vanilla_fits_inside_container_items(stack)
-            }
+            // ShulkerBoxBlockEntity.canPlaceItemThroughFace:
+            // `!(Block.byItem(item) instanceof ShulkerBoxBlock)`, so the block the
+            // item places decides, not its id; an item that places no block fits.
+            Kind::Shulker => self
+                .items
+                .get(&stack.item)
+                .and_then(|i| i.block)
+                .is_none_or(|block| !self.behaviours.is_shulker_box(block)),
             Kind::Crafter => match self.world.block_entities.get(&view.parts[0].0) {
                 Some(BlockEntity::Crafter(c)) => slot < 9 && !c.disabled[slot],
                 _ => false,
