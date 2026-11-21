@@ -879,11 +879,12 @@ pub fn is_vanilla_shulker_box_item(item: &str) -> bool {
     let Some(name) = item.strip_prefix("minecraft:") else {
         return false;
     };
-    const COLOURS: [&str; 16] = crate::block_entity_render::DYES.map(|(dye, _)| dye);
     name == "shulker_box"
-        || name
-            .strip_suffix("_shulker_box")
-            .is_some_and(|colour| COLOURS.contains(&colour))
+        || name.strip_suffix("_shulker_box").is_some_and(|colour| {
+            crate::block_entity_render::DYES
+                .iter()
+                .any(|(dye, _)| *dye == colour)
+        })
 }
 
 /// A chest block's name with its `type` and `facing` properties.

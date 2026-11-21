@@ -894,7 +894,6 @@ impl Game<'_> {
         use horizon_world::level::classes::Class;
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let data = self.res.behaviours().data(state);
-        let name = self.res.facts().get(state).name.clone();
         let prop = |game: &Self, key: &str| {
             game.pack
                 .assets
