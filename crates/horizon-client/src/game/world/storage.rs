@@ -170,16 +170,15 @@ impl Game<'_> {
                 is_shulker_box(self.res.behaviours(), state)
             })
     }
-    /// `ItemStack.canFitInsideContainerItems` of a `BlockItem`'s stack:
-    /// `!(getBlock() instanceof ShulkerBoxBlock)`, so the block the item places
-    /// decides, never the item's id (an item's id is not its block's: a seed's
-    /// item places its crop). An item that places no block always fits.
+    /// `ItemStack.canFitInsideContainerItems` for a stack whose item this client
+    /// has: the block the item places decides (`ItemInfo.block`), which is the
+    /// rule in `menu::container_items`.
     fn stack_fits_inside_container_items(&self, stack: &ItemStack) -> bool {
-        self.res
-            .items()
-            .get(&stack.item)
-            .and_then(|info| info.block)
-            .is_none_or(|block| !is_shulker_box(self.res.behaviours(), block))
+        horizon_client::menu::container_items::vanilla_fits_inside_container_items_for_item(
+            self.res.items(),
+            self.res.facts(),
+            stack,
+        )
     }
     /// Opening an ender chest shows the player's ender inventory in its place.
     pub(super) fn open_ender_chest(&mut self, key: (i32, i32, i32)) {
