@@ -434,7 +434,9 @@ impl RegionStorageUpgrader {
             eprintln!("Failed to replace an old region file: {e}");
             return;
         }
-        if let Err(e) = fs::remove_file(file).and_then(|()| fs::rename(&new_file, file)) {
+        // The rename replaces the target, so a crash cannot leave the folder
+        // without its region file, the `.mcc` files already replaced.
+        if let Err(e) = fs::rename(&new_file, file) {
             eprintln!("Failed to replace an old region file: {e}");
         }
     }
