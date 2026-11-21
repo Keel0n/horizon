@@ -142,11 +142,11 @@ impl Game<'_> {
         // and by its class a content block of a copper chest's template has
         // that template's weather state too.
         let state = self.world.block(p[0], p[1], p[2]);
-        let Some(sound) = horizon_client::mobs::transport_items::chest_hinge_sound(
-            self.res.behaviours(),
-            state,
-            open,
-        ) else {
+        let name = self.res.facts().get(state).name.clone();
+        let is_chest = self.res.behaviours().is_chest_block(state);
+        let Some(sound) =
+            horizon_client::mobs::transport_items::chest_hinge_sound(&name, is_chest, open)
+        else {
             return;
         };
         let at = [

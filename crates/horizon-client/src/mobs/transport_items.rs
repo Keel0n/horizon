@@ -91,19 +91,15 @@ fn name_at(w: &MobWorld, p: [i32; 3]) -> String {
 }
 /// `ChestBlock.getOpenChestSound` / `getCloseChestSound` of a chest block: a
 /// copper chest's comes from `CopperChestBlock.getHingeSound`, by its weather
-/// state (a waxed chest's is its state's). Only a `ChestBlock` has them, and a
-/// content block's chest is its template's (`factory_block`), so its weather
-/// state is the template's too.
-pub fn chest_hinge_sound(
-    behaviours: &horizon_world::level::Behaviours,
-    state: BlockStateId,
-    open: bool,
-) -> Option<&'static str> {
-    if !behaviours.is_chest_block(state) {
+/// state (a waxed chest's is its state's). Only a `ChestBlock` has them
+/// (`is_chest` is that class, which the caller asks of the block), and a content
+/// block's chest is its template's (`factory_block`), so its weather state is
+/// the template's too.
+pub fn chest_hinge_sound(block: &str, is_chest: bool, open: bool) -> Option<&'static str> {
+    if !is_chest {
         return None;
     }
-    let block = behaviours.block(state);
-    let base = horizon_client::block_entity_types::factory_block(&behaviours.table.info(block).name)
+    let base = horizon_client::block_entity_types::factory_block(block)
         .trim_start_matches("minecraft:")
         .trim_start_matches("waxed_");
     Some(
@@ -357,9 +353,15 @@ fn open_or_close(cx: &mut Bx, p: [i32; 3], open: bool, mob: u32) {
             at[0] += f64::from(o[0] - p[0]) * 0.5;
             at[2] += f64::from(o[2] - p[2]) * 0.5;
         }
-        let sound = chest_hinge_sound(&name_at(w, p), open).trim_start_matches("minecraft:");
-        let pitch = cx.level.random().next_float() * 0.1 + 0.9;
-        cx.events.push(MobEvent::Sound(sound, at, 0.5, pitch));
+        let state = w.world.block(p[0], p[1], p[2]);
+        let is_chest = w.facts.get(state).has_class("ChestBlock");
+        // `ChestBlockEntity.playSound`: only a `ChestBlock` has a hinge sound,
+        // so only it draws the pitch.
+        if let Some(sound) = chest_hinge_sound(&name_at(w, p), is_chest, open) {
+            let sound = sound.trim_start_matches("minecraft:");
+            let pitch = cx.level.random().next_float() * 0.1 + 0.9;
+            cx.events.push(MobEvent::Sound(sound, at, 0.5, pitch));
+        }
     }
     cx.events.push(MobEvent::ChestOpen {
         chest: p,

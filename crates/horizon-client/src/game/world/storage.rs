@@ -324,8 +324,8 @@ impl Game<'_> {
                 "minecraft:block.ender_chest.close"
             }
         } else if let Some(sound) = horizon_client::mobs::transport_items::chest_hinge_sound(
-            self.res.behaviours(),
-            id,
+            &name,
+            self.res.behaviours().is_chest_block(id),
             open,
         ) {
             sound
