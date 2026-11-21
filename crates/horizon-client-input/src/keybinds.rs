@@ -75,11 +75,14 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.debug.improvedTransparency", "key.keyboard.x", "debug"),
 ];
 /// Horizon's own key mappings: bound in Controls like the vanilla ones, but kept in
-/// `horizon-extras.txt` (`emoteKey`), never in `options.txt`, which stays exactly vanilla's
-/// (`MAPPINGS` is what the options parity harness compares with the pinned client).
+/// `horizon-extras.txt` (`emoteKey`, `fullbrightKey`), never in `options.txt`, which stays exactly
+/// vanilla's (`MAPPINGS` is what the options parity harness compares with the pinned client).
 pub const HORIZON_MAPPINGS: &[(&str, &str, &str)] = &[
     // The emote wheel (docs/cosmetics.md), on a key vanilla leaves free.
     ("key.emote", "key.keyboard.b", "multiplayer"),
+    // Fullbright (`extras.fullbright`), unbound until a player picks a key: vanilla has only the
+    // gamma slider.
+    ("key.fullbright", "key.keyboard.unknown", "misc"),
 ];
 /// Every mapping the game binds: vanilla's in `Options.keyMappings` order, then Horizon's.
 pub fn all_mappings() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
