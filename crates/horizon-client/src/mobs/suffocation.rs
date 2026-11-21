@@ -29,6 +29,11 @@ pub fn bind<'r>(
             Some("dirt_path" | "farmland" | "mud" | "soul_sand") => Always,
             Some("piston" | "sticky_piston") => NotExtendedPiston,
             Some("mangrove_roots" | "moving_piston") => Never,
+            // `ShulkerBoxBlock` suffocates while its lid is shut: its block entity is
+            // a shulker box's, which a content block answers with its template's
+            // and a block named `..._shulker_box` alone does not. Asked of the class
+            // before the name suffixes, and of any block, content ones included.
+            _ if crate::containers::is_shulker_box_block(&state.name) => ClosedShulker,
             Some(name)
                 if name.ends_with("_leaves")
                     || name == "glass"
@@ -39,10 +44,6 @@ pub fn bind<'r>(
             {
                 Never
             }
-            // `ShulkerBoxBlock` suffocates while its lid is shut: its block entity is
-            // a shulker box's, which a content block answers with its template's
-            // and a block named `..._shulker_box` alone does not.
-            Some(_) if crate::containers::is_shulker_box_block(&state.name) => ClosedShulker,
             _ => TaggedFullCollision,
         };
         definitions.insert(state.name.clone(), definition);
