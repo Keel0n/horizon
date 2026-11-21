@@ -349,6 +349,15 @@ impl RegionStorageUpgrader {
         else {
             return Ok(false);
         };
+        // A chunk the old file kept in its own `c.X.Z.mcc` is written back
+        // with the compression its payload already has: the payload is
+        // replaced before the stub is, so a stop in between leaves the old
+        // stub reading a stream of the same kind (`super::files`). Vanilla
+        // writes every chunk zlib, inline ones included.
+        let external = match open.reader.as_mut() {
+            Some((_, reader)) => reader.is_external(pos)?,
+            None => false,
+        };
         let mut root = record.nbt(limits)?;
         let version = as_int(root.tag.get("DataVersion"), -1);
         let mut changed = false;
@@ -362,7 +371,12 @@ impl RegionStorageUpgrader {
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as u32);
-            let out = ChunkRecord::from_nbt(&root, Compression::Zlib, timestamp, limits)?;
+            let compression = if external {
+                record.compression
+            } else {
+                Compression::Zlib
+            };
+            let out = ChunkRecord::from_nbt(&root, compression, timestamp, limits)?;
             let target = if self.builder.recreate_region_files {
                 resolve_recreate_directory(&self.region_folder)
                     .join(file.file_name().unwrap_or_default())
@@ -372,6 +386,13 @@ impl RegionStorageUpgrader {
             if open.writer.as_ref().is_none_or(|(path, _)| *path != target) {
                 if let Some(dir) = target.parent() {
                     fs::create_dir_all(dir)?;
+                }
+                if self.builder.recreate_region_files {
+                    // Every chunk of the file is written again this run, so
+                    // the recreate target is written whole: a header left by
+                    // an interrupted run would publish a stub for a chunk this
+                    // run never wrote.
+                    let _ = fs::remove_file(&target);
                 }
                 open.writer = Some((target.clone(), RegionFile::open_writable(&target, true)?));
             }
@@ -383,21 +404,32 @@ impl RegionStorageUpgrader {
         Ok(false)
     }
 
-    /// `onFileFinished`: the rewritten file replaces the old one.
+    /// `onFileFinished`: the rewritten file replaces the old one, with the
+    /// `c.X.Z.mcc` files its oversized chunks live in.
     fn on_file_finished(&self, open: &mut OpenFiles, file: &Path) {
         open.writer = None;
         open.reader = None;
-        let new_file = resolve_recreate_directory(file.parent().unwrap_or(Path::new(".")))
-            .join(file.file_name().unwrap_or_default());
-        if new_file.exists() {
-            if let Err(e) = fs::remove_file(file).and_then(|()| fs::rename(&new_file, file)) {
-                eprintln!("Failed to replace an old region file: {e}");
-            }
-        } else {
+        let folder = file.parent().unwrap_or(Path::new("."));
+        let new_file =
+            resolve_recreate_directory(folder).join(file.file_name().unwrap_or_default());
+        if !new_file.exists() {
             eprintln!(
                 "Failed to replace an old region file. New file {} does not exist.",
                 new_file.display()
             );
+            return;
+        }
+        // The payloads of the new file's oversized chunks go before the region
+        // that points to them, as `super::files` does: a stop in between leaves
+        // the old region reading its own payload or the rewritten one (same
+        // compression, `try_process_one_position`), never a stub whose file is
+        // missing. A payload that cannot be moved leaves the old pair alone.
+        if let Err(e) = move_external_payloads(&new_file, folder) {
+            eprintln!("Failed to replace an old region file: {e}");
+            return;
+        }
+        if let Err(e) = fs::remove_file(file).and_then(|()| fs::rename(&new_file, file)) {
+            eprintln!("Failed to replace an old region file: {e}");
         }
     }
 
@@ -407,6 +439,23 @@ impl RegionStorageUpgrader {
             let _ = fs::remove_dir_all(resolve_recreate_directory(&self.region_folder));
         }
     }
+}
+
+/// Moves the `c.X.Z.mcc` files of `new_file` into `folder`, over the ones of
+/// the file it replaces, and syncs the folder: the region's own sync does not
+/// cover them (`RegionFile::write`).
+fn move_external_payloads(new_file: &Path, folder: &Path) -> io::Result<()> {
+    let payloads = {
+        let mut region = RegionFile::open(new_file)?;
+        region.external_payloads()?
+    };
+    for payload in payloads {
+        fs::rename(
+            &payload,
+            folder.join(payload.file_name().unwrap_or_default()),
+        )?;
+    }
+    crate::fs_sync::sync_dir(folder)
 }
 
 /// `resolveRecreateDirectory`: `new_` + the folder's name, beside it.
