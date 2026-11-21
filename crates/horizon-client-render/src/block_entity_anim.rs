@@ -1066,7 +1066,10 @@ mod tests {
             ticker("minecraft:red_shulker_box", facing),
             Some(Ticker::Shulker { facing: 1 })
         );
-        assert_eq!(ticker("minecraft:shulker_box", facing), Some(Ticker::Shulker { facing: 1 }));
+        assert_eq!(
+            ticker("minecraft:shulker_box", facing),
+            Some(Ticker::Shulker { facing: 1 })
+        );
         assert_eq!(
             ticker("minecraft:waxed_copper_chest", facing),
             Some(Ticker::Lid)

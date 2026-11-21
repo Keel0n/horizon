@@ -10,10 +10,10 @@ use std::{
 };
 
 /// The vanilla data plus a content mod whose blocks copy templates only: a
-        /// chest, a barrel, a hopper, a dispenser, a shulker box, an anvil and a
-        /// stone block whose id ends in a vanilla chest's name. `None` without the
-        /// prepared vanilla data (CI).
-        fn resources() -> Option<&'static Path> {
+/// chest, a barrel, a hopper, a dispenser, a shulker box, an anvil and a stone
+/// block whose id ends in a vanilla chest's name. `None` without the prepared
+/// vanilla data (CI).
+fn resources() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
         let base =
