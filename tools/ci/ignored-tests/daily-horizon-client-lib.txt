@@ -341,6 +341,7 @@ horizon-client-lib mobs::tame::tests::sitting_down_keeps_a_wolfs_begging_tilt li
 horizon-client-lib mobs::tame::universal_anger_tests::universal_anger_targets_a_player_the_wolf_was_never_angered_by lib daily resources
 horizon-client-lib mobs::trader::tests::a_trader_does_not_drink_in_the_end lib daily resources
 horizon-client-lib mobs::trader::trade_start_tests::a_trader_stops_trading_when_hurt_or_out_of_reach lib daily resources
+horizon-client-lib mobs::transport_items::tests::a_target_survives_its_chests_state_change_but_not_its_replacement lib daily resources
 horizon-client-lib mobs::turtle::tests::laying_an_egg_posts_block_place_with_the_level_s_pitch_and_its_own_eggs lib daily resources
 horizon-client-lib mobs::undead::conversion_tests::a_drowning_zombie_keeps_its_gear_and_name_tag lib daily resources
 horizon-client-lib mobs::undead::conversion_tests::a_husk_turns_into_a_zombie_with_its_flags lib daily resources
