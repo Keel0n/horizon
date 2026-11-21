@@ -628,6 +628,27 @@ mod tests {
         }
     }
 
+    /// `ShulkerBoxBlock.canOpen`: a box whose lid has no room opens neither its
+    /// menu nor anything else (`useWithoutItem` returns before the screen).
+    #[test]
+    #[ignore = "daily"]
+    fn a_shulker_box_with_a_blocked_lid_opens_nothing() {
+        let mut resources = None;
+        let mut game = super::super::game_tests::tests::server_game(&mut resources);
+        let registry = game.pack.assets.registry;
+        let shulker = registry.default_state("minecraft:shulker_box").unwrap();
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, shulker).unwrap();
+        game.world.set(key.0, key.1 + 1, key.2, stone).unwrap();
+        game.open_block_effect_menu([8, 64, 8]);
+        assert_eq!(game.container, None, "a blocked shulker box opened its menu");
+        assert!(
+            !matches!(game.screen, crate::game::Screen::Inventory),
+            "a blocked shulker box opened a screen"
+        );
+    }
+
     #[test]
     fn double_chest_halves_connect_around_the_facing() {
         let half = |kind, facing| ChestHalf {
