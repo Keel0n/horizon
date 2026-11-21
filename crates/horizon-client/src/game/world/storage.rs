@@ -252,7 +252,11 @@ fn facing_step(facing: &str) -> (i32, i32) {
 
 /// Java's `state.getBlock() instanceof ShulkerBoxBlock`, for this client's
 /// tables: the block's class, which a content block answers with its template's.
-/// The client's own door to that answer, kept where mod code has always found it.
+/// The client's own door to that answer. Its name and place are kept because the
+/// mod point `horizon_client::game::storage::is_shulker_box` and its entry in the
+/// generated `internals.json` may not disappear (`docs/layers.md#mod-points-stay-put`,
+/// `tools/check_mod_points_unchanged.py`); the arguments the class answer needs
+/// changed that point, and `tools/mod_points_removed.txt` lists it.
 pub(super) fn is_shulker_box(behaviours: &Behaviours, state: BlockStateId) -> bool {
     behaviours.is_shulker_box(state)
 }
@@ -624,6 +628,40 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `BlockState.getMenuProvider`: vanilla asks the block's class, so a copper
+    /// chest (a `ChestBlock`) opens for a spectator, an ender chest's
+    /// `EnderChestBlock` does not, and a block of another class whose id ends in
+    /// `chest` does not either.
+    #[test]
+    #[ignore = "daily"]
+    fn a_spectators_containers_are_asked_by_class() {
+        let mut resources = None;
+        let game = super::super::game_tests::tests::server_game(&mut resources);
+        let behaviours = game.res.behaviours();
+        let registry = game.pack.assets.registry;
+        for (block, opens) in [
+            ("minecraft:chest", true),
+            ("minecraft:trapped_chest", true),
+            ("minecraft:copper_chest", true),
+            ("minecraft:waxed_exposed_copper_chest", true),
+            ("minecraft:barrel", true),
+            ("minecraft:hopper", true),
+            ("minecraft:furnace", true),
+            ("minecraft:blast_furnace", true),
+            ("minecraft:smoker", true),
+            ("minecraft:dispenser", true),
+            ("minecraft:dropper", true),
+            ("minecraft:brewing_stand", true),
+            ("minecraft:crafter", true),
+            ("minecraft:shulker_box", true),
+            ("minecraft:ender_chest", false),
+            ("minecraft:crafting_table", false),
+        ] {
+            let state = registry.default_state(block).unwrap();
+            assert_eq!(spectator_container(behaviours, state), opens, "{block}");
+        }
+    }
 
     /// `ChestBlockEntity`'s opener counter plays the block's own hinge
     /// sound: a copper chest's, by weather state, not the wooden chest's.
