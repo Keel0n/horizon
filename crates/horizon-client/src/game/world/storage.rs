@@ -8,7 +8,33 @@ use horizon_client::{
     text::Text,
 };
 use horizon_core::random::RandomSource;
-use horizon_world::{level::Behaviours, registry::BlockStateId};
+use horizon_world::{
+    level::{Behaviours, classes::Class},
+    registry::BlockStateId,
+};
+
+/// The blocks a spectator's click opens a menu for (`BlockState.getMenuProvider`
+/// up to `BaseContainerBlockEntity.canOpen`): vanilla asks each block's class, so
+/// a content block of a container's template answers for it, and a block whose id
+/// only ends in a container's name does not.
+fn spectator_container(behaviours: &Behaviours, state: BlockStateId) -> bool {
+    if is_shulker_box(behaviours, state) || behaviours.is_chest_block(state) {
+        return true;
+    }
+    let data = behaviours.data(state);
+    [
+        Class::Barrel,
+        Class::Hopper,
+        Class::Dispenser,
+        Class::Dropper,
+        Class::AbstractFurnace,
+        Class::BrewingStand,
+        Class::Crafter,
+    ]
+    .into_iter()
+    .any(|class| data.is(class))
+}
+
 impl Game<'_> {
     /// `ServerPlayerGameMode.useItemOn` for a spectator: the block's menu
     /// (`BlockState.getMenuProvider`) opens, and nothing else happens. The
@@ -27,21 +53,7 @@ impl Game<'_> {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let facts = self.res.facts();
         let name = facts.get(state).name.clone();
-        let container = is_shulker_box(self.res.behaviours(), state)
-            || matches!(
-                name.trim_start_matches("minecraft:"),
-                "chest"
-                    | "trapped_chest"
-                    | "barrel"
-                    | "hopper"
-                    | "dispenser"
-                    | "dropper"
-                    | "furnace"
-                    | "blast_furnace"
-                    | "smoker"
-                    | "brewing_stand"
-                    | "crafter"
-            );
+        let container = spectator_container(self.res.behaviours(), state);
         // ChestBlock.getMenuProvider: none while either half is blocked.
         if !container || self.chest_menu_blocked(key, &name) {
             return;
