@@ -42,6 +42,10 @@ enum Interaction {
 struct Target {
     pos: [i32; 3],
     name: String,
+    /// The block state at `pos` when the target was chosen: vanilla's identity
+    /// of the block entity it picked (`TransportItemsBetweenContainers
+    /// .targetHasNotChanged`), which a level keeps until the block goes.
+    state: horizon_world::registry::BlockStateId,
     /// The halves of the container in slot order (the right half first).
     halves: Vec<[i32; 3]>,
 }
@@ -460,10 +464,14 @@ impl Transport {
             return false;
         };
         let w = cx.w;
+        // `targetHasNotChanged`: the block entity the target was picked with is
+        // still there, which a level's own keeps only while the block does not
+        // change. `isWantedBlock` above asks the state it was picked at, as
+        // vanilla does, so only this one reads the level now.
         let unchanged = matches!(
             w.world.block_entities.get(&(t.pos[0], t.pos[1], t.pos[2])),
             Some(BlockEntity::Chest(_))
-        ) && is_chest_block(w, t.pos);
+        ) && w.world.block(t.pos[0], t.pos[1], t.pos[2]) == t.state;
         if !(wanted(w, m, &t.name) && unchanged) || blocked(w, t.pos) {
             return false;
         }
@@ -554,6 +562,7 @@ impl Transport {
                             Target {
                                 pos: p,
                                 name,
+                                state: w.world.block(p[0], p[1], p[2]),
                                 halves,
                             },
                         ));
