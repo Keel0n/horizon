@@ -46,6 +46,7 @@ horizon-client game::gui_entity::tests::a_screen_draws_a_mob_by_type_once_and_re
 horizon-client game::launch_api::tests::developer_offline_never_consumes_inherited_sessions lib daily child-process
 horizon-client game::levels::tests::a_level_keeps_its_portal_palettes_while_another_ticks lib daily resources
 horizon-client game::levels::tests::a_ticket_while_an_idle_close_waits_keeps_the_level lib daily resources
+horizon-client game::levels::tests::a_write_after_a_close_is_listed_keeps_the_level lib daily resources
 horizon-client game::levels::tests::a_write_while_an_idle_close_waits_keeps_the_level_for_its_save lib daily resources
 horizon-client game::levels::tests::an_idle_close_keeps_the_level_until_its_save_is_on_disk lib daily resources
 horizon-client game::maps::tests::map_on_banner_in_adventure_mode_honours_can_place_on lib daily game-boot

@@ -1676,7 +1676,8 @@ impl Game<'_> {
 
     /// The second half of a close: the pass that finds the level's queued save done ends the
     /// close and its chunks and entities leave memory. A level that came back into use keeps
-    /// open, and the writes it queued land on their own.
+    /// open, and the writes it queued land on their own; so does a level whose close a write
+    /// cancelled after the pass listed it.
     fn finish_closing_parked_level(&mut self, dim: Dim) -> Result<()> {
         let written = match self.levels.parked.get(&dim) {
             None => return Ok(()),
@@ -1701,6 +1702,14 @@ impl Game<'_> {
             if let Some(p) = self.levels.parked.get_mut(&dim) {
                 p.not_closing();
             }
+            return Ok(());
+        }
+        // The pass listed this level for the drop on its `closing` flag, but the two happen
+        // apart in the pass: another level's save hooks run between them
+        // (`begin_closing_parked_level`), and a write they make through a parked accessor
+        // cancels this close. What such a write left must not go with the save already on
+        // disk: the level stays parked, and is saved again on its next close.
+        if !self.levels.parked.get(&dim).is_some_and(|p| p.closing) {
             return Ok(());
         }
         let back = self.dim;
@@ -2167,6 +2176,95 @@ mod tests {
             "the level was dropped with a write of its own unsaved"
         );
         // Saved again, and closed with it: the write is in the region file.
+        game.close_parked_level(Dim::Nether).unwrap();
+        let save = SaveDir::new(dimension_dir(&world, Dim::Nether.id()), LevelShape::NETHER);
+        let read_back = save
+            .load(0, 0, game.pack.assets.registry, world_biomes!(game))
+            .expect("the closed level's chunk is not in the region file");
+        assert_eq!(
+            read_back.block(1, 70, 2),
+            gold,
+            "the write that cancelled the close was not saved"
+        );
+    }
+
+    /// The same write can arrive inside the closing pass itself: the pass lists the levels to
+    /// drop before it saves the others (`close_idle_levels`), and a save hook of one of those
+    /// others can still write to a listed level through a parked accessor. The finish the pass
+    /// then runs for the level must see the cancelled close and leave the level parked, and
+    /// the write goes with the level's next save, not with the one already on disk.
+    #[test]
+    #[ignore = "daily"]
+    fn a_write_after_a_close_is_listed_keeps_the_level() {
+        use horizon_client::{
+            chunk::Chunk,
+            save::{LevelShape, dimension_dir},
+        };
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("idle-close-listed");
+        let _ = std::fs::remove_dir_all(&home);
+        let world = home.join("saves/idle-close-listed");
+        let mut resources = None;
+        let mut game = open_game(&mut resources, &root, &home, &world);
+        game.enter_level(Dim::Nether).unwrap();
+        let _ = game
+            .save
+            .tables
+            .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&game.pack.assets)));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        let gold = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:gold_block")
+            .unwrap();
+        let mut chunk = Chunk::with_layout(0, 0, game.world.shape.column());
+        chunk.set(1, 70, 2, stone.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.world.modified.insert((0, 0));
+        game.enter_level(Dim::Overworld).unwrap();
+        game.levels.parked_mut(Dim::Nether).unwrap().idle = IDLE_TICKS - 1;
+        game.close_idle_levels().unwrap();
+        assert!(
+            game.levels.parked.get(&Dim::Nether).unwrap().closing,
+            "the level is not on its way out"
+        );
+        game.levels
+            .parked
+            .get(&Dim::Nether)
+            .unwrap()
+            .save
+            .flush()
+            .unwrap();
+        // The pass has the level in its drop list now, and another level's save hook writes to
+        // it through its parked world before the pass reaches the drop.
+        let changed = game
+            .levels
+            .parked_world_mut_of(Dim::Nether.id())
+            .expect("the parked level");
+        let layout = changed.shape.column();
+        let mut chunk = Chunk::with_layout(0, 0, layout);
+        chunk.set(1, 70, 2, gold.0);
+        changed.chunks.insert((0, 0), Arc::new(chunk));
+        changed.modified.insert((0, 0));
+        assert!(
+            !game.levels.parked.get(&Dim::Nether).unwrap().closing,
+            "a write did not cancel the queued close"
+        );
+        // What the pass does with its listing, made by hand: the finish must not drop the
+        // level whose close the write cancelled.
+        game.finish_closing_parked_level(Dim::Nether).unwrap();
+        assert!(
+            game.levels.parked.contains_key(&Dim::Nether),
+            "the level was dropped with a write of its own unsaved"
+        );
+        // Closed for good, the write is in the region file.
         game.close_parked_level(Dim::Nether).unwrap();
         let save = SaveDir::new(dimension_dir(&world, Dim::Nether.id()), LevelShape::NETHER);
         let read_back = save
