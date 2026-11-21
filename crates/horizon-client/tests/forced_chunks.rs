@@ -254,3 +254,53 @@ fn a_forced_load_ends_when_its_generation_failed() {
         "a saved column was dropped because a neighbour's generation failed"
     );
 }
+
+/// A failed generation more than two columns out — past the reach of
+/// `blocked_by_a_failed_generation` — still ends the load barrier (#18403):
+/// the failed column is requested, so the decoration-ordering wait took it
+/// for forthcoming forever, and the failed column's own low rank (kept from
+/// the first forced chunk's rings) let it hold back the higher-ranked
+/// decoration the second forced chunk needs, with no work left in flight.
+/// Once the impossible predecessor stops counting, the decoration goes ahead
+/// and the chunk loads.
+#[test]
+fn a_forced_load_ends_when_an_ordering_predecessor_failed() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let context = worker_context(&root);
+    let generator = Arc::new(Plain {
+        failed: Some((43, -40)),
+        saved: None,
+    });
+    let mut streaming = Streaming::new(generator, context, 2);
+    streaming.center = (0, 0);
+    streaming.radius = 2;
+    let world = World::new(BlockStateId(0), 0);
+    // A first forced chunk loads three columns from the one whose generation
+    // fails: its own decoration never needs the failed column's 3x3.
+    let (world, streaming) = forced_load(
+        streaming,
+        world,
+        (40, -40),
+        "the forced load beside the failed column never returned",
+    );
+    assert!(
+        world.chunks.contains_key(&(40, -40)),
+        "a forced chunk beside a failed column it does not need stayed unloaded"
+    );
+    // The failure at (43, -40) keeps the low rank the first chunk's rings
+    // gave it. The decorations the second forced chunk needs are ranked after
+    // it, and (45, -40) — within two of it — has a complete neighbourhood;
+    // only the ordering wait on the failed column holds it back.
+    let (world, _streaming) = forced_load(
+        streaming,
+        world,
+        (46, -40),
+        "the forced load barrier never returned",
+    );
+    assert!(
+        world.chunks.contains_key(&(46, -40)),
+        "a complete decoration stayed blocked by an impossible predecessor"
+    );
+}
