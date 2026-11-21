@@ -257,12 +257,11 @@ fn a_forced_load_ends_when_its_generation_failed() {
 
 /// A failed generation more than two columns out — past the reach of
 /// `blocked_by_a_failed_generation` — still ends the load barrier (#18403):
-/// the failed column is requested, so the decoration-ordering wait took it
-/// for forthcoming forever, and the failed column's own low rank (kept from
-/// the first forced chunk's rings) let it hold back the higher-ranked
-/// decoration the second forced chunk needs, with no work left in flight.
-/// Once the impossible predecessor stops counting, the decoration goes ahead
-/// and the chunk loads.
+/// the failed column is requested, so the ranked neighbours around it that
+/// the ordering wait asks about were taken for forthcoming for ever, and one
+/// of them within two of the decoration the second forced chunk needs held it
+/// back with no work left in flight. Once an impossible predecessor stops
+/// counting, the decoration goes ahead and the chunk loads.
 #[test]
 fn a_forced_load_ends_when_an_ordering_predecessor_failed() {
     let Some(root) = resources() else {
@@ -289,10 +288,12 @@ fn a_forced_load_ends_when_an_ordering_predecessor_failed() {
         world.chunks.contains_key(&(40, -40)),
         "a forced chunk beside a failed column it does not need stayed unloaded"
     );
-    // The failure at (43, -40) keeps the low rank the first chunk's rings
-    // gave it. The decorations the second forced chunk needs are ranked after
-    // it, and (45, -40) — within two of it — has a complete neighbourhood;
-    // only the ordering wait on the failed column holds it back.
+    // The neighbours the first chunk's rings ranked around the failure at
+    // (43, -40) count as forthcoming: their 3x3 needs the failed column,
+    // which stays requested and is not asked for again. They are ranked
+    // before the decorations the second forced chunk needs, and (45, -40),
+    // within two of them, has a complete neighbourhood, so only that ordering
+    // wait held it back.
     let (world, _streaming) = forced_load(
         streaming,
         world,

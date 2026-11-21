@@ -2811,6 +2811,8 @@ impl Streaming {
                 // above took every finished job. A stage the column needs can
                 // no longer progress (a failed predecessor past the reach of
                 // the check above, for one), so waiting again would never end.
+                // A mailbox a worker holds is not read: wait for the next pass
+                // rather than call it empty.
                 if !self.chunks_in_flight()
                     && self.saving == 0
                     && self.pending() == 0
@@ -2818,7 +2820,7 @@ impl Streaming {
                         .shared
                         .done
                         .try_lock()
-                        .is_none_or(|done| done.is_empty())
+                        .is_some_and(|done| done.is_empty())
                 {
                     log::warn!(
                         "Horizon: the forced chunk ({x}, {z}) cannot progress; it stays unloaded"
