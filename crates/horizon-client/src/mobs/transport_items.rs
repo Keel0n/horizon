@@ -37,15 +37,23 @@ enum Interaction {
     PlaceNoItem,
 }
 
-/// `TransportItemTarget`: the chest and its block state when it was chosen.
+/// `TransportItemTarget`: the chest, its name and block state when it was
+/// chosen, and the identity of its block entity.
 #[derive(Clone, Debug)]
 struct Target {
     pos: [i32; 3],
     name: String,
-    /// The block state at `pos` when the target was chosen: vanilla's identity
-    /// of the block entity it picked (`TransportItemsBetweenContainers
-    /// .targetHasNotChanged`), which a level keeps until the block goes.
+    /// The block state at `pos` when the target was chosen, kept the way
+    /// vanilla keeps `TransportItemTarget.state`: the interaction range reads
+    /// its collision shape (`isWithinTargetDistance`). It is not the target's
+    /// identity: waterlogging or a copper chest's weathering step changes the
+    /// state without replacing the block entity.
     state: horizon_world::registry::BlockStateId,
+    /// The identity of the block entity the target was chosen with
+    /// (`targetHasNotChanged` compares the block entity itself): the
+    /// `BlockEntities::generation` at `pos`, which changes only when the
+    /// block entity there is replaced, not when its block's state changes.
+    generation: Option<u64>,
     /// The halves of the container in slot order (the right half first).
     halves: Vec<[i32; 3]>,
 }
@@ -257,9 +265,11 @@ fn within(w: &MobWorld, m: &Mob, distance: f64, t: &Target, from: [f64; 3]) -> b
             from[2] + size.z / 2.0,
         ),
     );
-    // getCollisionShape of the state the target was chosen with: the block
-    // there now (the target is dropped once it changes).
-    let Some(shape) = w.collision_bounds(t.pos) else {
+    // `isWithinTargetDistance`: `getCollisionShape` of the state the target
+    // was chosen with (`target.state`), which may differ from the block
+    // there now: a state change that keeps the block entity (waterlogging,
+    // weathering) does not drop the target.
+    let Some(shape) = w.collision_bounds_of(t.state, t.pos) else {
         return false;
     };
     let p = Vec3::new(
@@ -380,6 +390,22 @@ fn open_or_close(cx: &mut Bx, p: [i32; 3], open: bool, mob: u32) {
     });
 }
 
+/// `TransportItemsBetweenContainers.targetHasNotChanged`: the chest block
+/// entity the target was chosen with is still the one at its position.
+/// Vanilla compares the block entity itself; here the identity is its
+/// `BlockEntities::generation`, which a replacement bumps and a block state
+/// change (waterlogging, a copper chest's weathering step) does not.
+fn target_unchanged(w: &MobWorld, t: &Target) -> bool {
+    matches!(
+        w.world.block_entities.get(&(t.pos[0], t.pos[1], t.pos[2])),
+        Some(BlockEntity::Chest(_))
+    ) && w
+        .world
+        .block_entities
+        .generation(&(t.pos[0], t.pos[1], t.pos[2]))
+        == t.generation
+}
+
 impl Transport {
     /// `Behavior.tryStart`: no transport cooldown, not panicking, not
     /// leashed; the duration draw, then `start`.
@@ -464,14 +490,10 @@ impl Transport {
             return false;
         };
         let w = cx.w;
-        // `targetHasNotChanged`: the block entity the target was picked with is
-        // still there, which a level's own keeps only while the block does not
-        // change. `isWantedBlock` above asks the state it was picked at, as
-        // vanilla does, so only this one reads the level now.
-        let unchanged = matches!(
-            w.world.block_entities.get(&(t.pos[0], t.pos[1], t.pos[2])),
-            Some(BlockEntity::Chest(_))
-        ) && w.world.block(t.pos[0], t.pos[1], t.pos[2]) == t.state;
+        // `targetHasNotChanged` asks the identity of the block entity, not
+        // the block state. `isWantedBlock` asks the name it was picked at,
+        // as vanilla asks its kept state, so only this one reads the level.
+        let unchanged = target_unchanged(w, &t);
         if !(wanted(w, m, &t.name) && unchanged) || blocked(w, t.pos) {
             return false;
         }
@@ -563,6 +585,7 @@ impl Transport {
                                 pos: p,
                                 name,
                                 state: w.world.block(p[0], p[1], p[2]),
+                                generation: w.world.block_entities.generation(&(p[0], p[1], p[2])),
                                 halves,
                             },
                         ));
@@ -859,4 +882,84 @@ fn sees_a_side(w: &MobWorld, p: [i32; 3], eye: [f64; 3]) -> bool {
         );
         w.clip_block_at(from, to) == Some(p)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+
+    /// `TransportItemsBetweenContainers.targetHasNotChanged` compares the
+    /// block entity, not the block state: a copper golem keeps its target
+    /// through a state change that retains the block entity (waterlogging,
+    /// a copper chest's weathering step) and drops it once the block entity
+    /// is replaced or gone.
+    #[test]
+    #[ignore = "daily"]
+    fn a_target_survives_its_chests_state_change_but_not_its_replacement() {
+        let kept = std::cell::Cell::new(None);
+        let stale = std::cell::Cell::new(None);
+        let dry = std::cell::Cell::new(None);
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let dry_state = registry.default_state("minecraft:copper_chest").unwrap();
+            let mut wet_state = registry.state(dry_state).unwrap().clone();
+            wet_state
+                .properties
+                .insert("waterlogged".to_owned(), "true".to_owned());
+            let wet = registry.resolve(&wet_state).unwrap();
+            // (0, 64, 0): the chest the target was picked at, waterlogged
+            // since — a new block state id over the same block entity.
+            world.set(0, 64, 0, wet).unwrap();
+            world
+                .block_entities
+                .insert((0, 64, 0), BlockEntity::Chest(vec![None; 27]));
+            kept.set(world.block_entities.generation(&(0, 64, 0)));
+            // (2, 64, 0): a chest whose block entity was replaced after the
+            // pick, so the generation recorded then is stale.
+            world.set(2, 64, 0, dry_state).unwrap();
+            world
+                .block_entities
+                .insert((2, 64, 0), BlockEntity::Chest(vec![None; 27]));
+            stale.set(world.block_entities.generation(&(2, 64, 0)));
+            world
+                .block_entities
+                .replace((2, 64, 0), BlockEntity::Chest(vec![None; 27]));
+            // (4, 64, 0): a chest block with no block entity at all.
+            world.set(4, 64, 0, dry_state).unwrap();
+            dry.set(Some(dry_state));
+        };
+        assert!(
+            with_built_test_world(&[], build, |w, _| {
+                let dry = dry.get().unwrap();
+                // The scenario: the block at the target's position is not
+                // the state the target was picked with.
+                assert_ne!(w.world.block(0, 64, 0), dry);
+                let target = |pos, generation| Target {
+                    pos,
+                    name: "minecraft:copper_chest".to_owned(),
+                    state: dry,
+                    generation,
+                    halves: vec![pos],
+                };
+                assert!(
+                    target_unchanged(w, &target([0, 64, 0], kept.get())),
+                    "a state change that keeps the block entity keeps the target"
+                );
+                assert!(
+                    !target_unchanged(w, &target([2, 64, 0], stale.get())),
+                    "a replaced block entity drops the target"
+                );
+                assert!(
+                    !target_unchanged(w, &target([4, 64, 0], kept.get())),
+                    "a position with no block entity drops the target"
+                );
+            }),
+            "vanilla data is missing"
+        );
+    }
 }
