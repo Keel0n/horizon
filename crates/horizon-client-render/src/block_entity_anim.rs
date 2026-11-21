@@ -847,7 +847,7 @@ pub enum Ticker {
 pub fn ticker(name: &str, prop: impl Fn(&str) -> Option<String>) -> Option<Ticker> {
     // The block's id, with its `minecraft:` namespace: the block entity type
     // below is looked up by full id, so a stripped name would answer nothing.
-    let id = name;
+    let namespaced = name;
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     let unwaxed = name.strip_prefix("waxed_").unwrap_or(name);
     Some(match unwaxed {
@@ -866,7 +866,7 @@ pub fn ticker(name: &str, prop: impl Fn(&str) -> Option<String>) -> Option<Ticke
         "dragon_head" | "dragon_wall_head" | "piglin_head" | "piglin_wall_head" => Ticker::Skull {
             powered: prop("powered").as_deref() == Some("true"),
         },
-        _ if crate::containers::is_shulker_box_block(id) => Ticker::Shulker {
+        _ if crate::containers::is_shulker_box_block(namespaced) => Ticker::Shulker {
             facing: prop("facing")
                 .as_deref()
                 .and_then(direction_index)
