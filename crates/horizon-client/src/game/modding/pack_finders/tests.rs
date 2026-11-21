@@ -136,8 +136,7 @@ impl Hooks for Finder {
             if self.feature && kind == PackType::ServerData {
                 pack.source = PackSource::Feature;
             }
-            // A refused registration is read from the repository; the tests assert on it there.
-            let _ = event.packs.add_pack_finders(pack);
+            event.packs.add_pack_finders(pack).unwrap();
         }
     }
 }
@@ -671,34 +670,40 @@ fn a_bundled_pack_entry_past_the_end_count_is_not_mounted() {
 
 /// A package replaced on disk after it was loaded is checked again before a reload mounts it, and
 /// the archive mounted is the one checked: an entry name the package's checks refuse (here a `\`
-/// separator) keeps the pack out of the repository, though the archive still lists every entry its
-/// END record counts.
+/// separator) leaves the repository without the pack, though the archive still lists every entry
+/// its END record counts.
 #[test]
 fn a_replaced_package_the_package_checks_refuse_is_not_mounted() {
     let mut fixture = Fixture::new(true);
     let sources = fixture.sources();
-    with_finder(|| {
-        let mounted = data_packs(&sources);
-        assert_eq!(mounted.len(), 1);
-        assert_eq!(
-            mounted[0].read("data/packmod/function/probe.mcfunction"),
-            Some(b"say from-optional\n".to_vec())
-        );
-
-        fixture.files.push((
-            format!("{DATA_PACK}/data\\packmod\\function\\hidden.mcfunction"),
-            b"say hidden\n".to_vec(),
-        ));
-        fixture.publish();
-        assert!(horizon_mod_package::Package::read(&fixture.package).is_err());
-
-        let mut registry = Registry::new(PackType::ServerData, sources.clone());
-        let found = registry.add_pack_finders(PackRegistration::new(
+    let registration = || {
+        PackRegistration::new(
             Identifier::parse(&format!("packmod:{DATA_PACK}")).unwrap(),
             PackType::ServerData,
             mod_api::Text::translate("packmod.optional.title", vec![]),
-        ));
-        assert!(found.is_err());
-        assert!(data_packs(&sources).is_empty());
-    });
+        )
+    };
+    let mut loaded = Registry::new(PackType::ServerData, sources.clone());
+    loaded.add_pack_finders(registration()).unwrap();
+    assert_eq!(loaded.packs.len(), 1);
+    assert_eq!(
+        loaded.packs[0]
+            .source
+            .open()
+            .unwrap()
+            .read("data/packmod/function/probe.mcfunction")
+            .unwrap(),
+        b"say from-optional\n"
+    );
+
+    fixture.files.push((
+        format!("{DATA_PACK}/data\\packmod\\function\\hidden.mcfunction"),
+        b"say hidden\n".to_vec(),
+    ));
+    fixture.publish();
+    // The package's own checks refuse what the path holds now, and it is still the loaded one.
+    assert!(horizon_mod_package::Package::read(&fixture.package).is_err());
+    let mut reloaded = Registry::new(PackType::ServerData, sources);
+    assert!(reloaded.add_pack_finders(registration()).is_err());
+    assert!(reloaded.packs.is_empty());
 }
