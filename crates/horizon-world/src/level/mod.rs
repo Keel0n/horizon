@@ -135,6 +135,7 @@ mod buckets;
 mod creaking;
 mod falling;
 mod feature_world;
+pub mod flip;
 mod fluids;
 mod growth;
 mod hooks;

@@ -10,9 +10,9 @@ use std::{
 };
 
 /// The vanilla data plus a content mod whose blocks copy templates only: a
-/// chest, a barrel, a hopper, a dispenser, a shulker box, an anvil and a stone
-/// block whose id ends in a vanilla chest's name. `None` without the prepared
-/// vanilla data (CI).
+/// chest, a barrel, a hopper, a dispenser, a shulker box, an anvil, doors and a
+/// trapdoor, and stone blocks whose ids end in vanilla containers' and a
+/// door's names. `None` without the prepared vanilla data (CI).
 fn resources() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
@@ -35,6 +35,10 @@ fn resources() -> Option<&'static Path> {
             ("lockbox", "shulker_box"),
             ("hammer", "anvil"),
             ("fake_copper_chest", "stone"),
+            ("iron_gate", "iron_door"),
+            ("oak_gate", "oak_door"),
+            ("copper_hatch", "copper_trapdoor"),
+            ("fake_door", "stone"),
         ] {
             files.push((
                 format!("data/fieldtest/horizon/block/{id}.json"),
@@ -133,6 +137,37 @@ fn a_content_blocks_rules_come_from_its_template_and_never_from_its_id() {
         ("minecraft:beacon", PreRemove::Beacon),
     ] {
         assert_eq!(pre_remove(&behaviours, state(block)), dropped, "{block}");
+    }
+    // A hand and a wind charge's burst ask the block's class and, for a door or
+    // trapdoor, its `BlockSetType` flags (`BlockBehaviour.onExplosionHit`): a
+    // content block of a door's template answers for it, and a stone block
+    // whose id only ends in `_door` answers for nothing.
+    for (block, by_wind, by_hand) in [
+        ("minecraft:oak_door", true, true),
+        ("minecraft:iron_door", false, false),
+        ("minecraft:copper_trapdoor", true, true),
+        ("minecraft:iron_trapdoor", false, false),
+        ("minecraft:oak_fence_gate", true, true),
+        ("minecraft:oak_button", true, true),
+        ("minecraft:lever", true, true),
+        ("minecraft:bell", true, false),
+        ("minecraft:water_cauldron", false, true),
+        ("fieldtest:iron_gate", false, false),
+        ("fieldtest:oak_gate", true, true),
+        ("fieldtest:copper_hatch", true, true),
+        ("fieldtest:fake_door", false, false),
+    ] {
+        let data = behaviours.data(state(block));
+        assert_eq!(
+            horizon_world::level::flip::flips_by_wind_charge(data),
+            by_wind,
+            "{block} in a wind charge's burst"
+        );
+        assert_eq!(
+            horizon_world::level::flip::flips_by_hand(data),
+            by_hand,
+            "{block} by hand"
+        );
     }
     // A falling anvil's damage source asks the class, its saved `HurtEntities`
     // default and its wear ask the tag: vanilla's three anvils answer both, and
