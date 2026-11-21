@@ -845,6 +845,9 @@ pub enum Ticker {
 
 /// The [`Ticker`] of a block state, by block name and property lookup.
 pub fn ticker(name: &str, prop: impl Fn(&str) -> Option<String>) -> Option<Ticker> {
+    // The block's id, with its `minecraft:` namespace: the block entity type
+    // below is looked up by full id, so a stripped name would answer nothing.
+    let id = name;
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     let unwaxed = name.strip_prefix("waxed_").unwrap_or(name);
     Some(match unwaxed {
@@ -863,7 +866,7 @@ pub fn ticker(name: &str, prop: impl Fn(&str) -> Option<String>) -> Option<Ticke
         "dragon_head" | "dragon_wall_head" | "piglin_head" | "piglin_wall_head" => Ticker::Skull {
             powered: prop("powered").as_deref() == Some("true"),
         },
-        n if crate::containers::is_shulker_box_block(n) => Ticker::Shulker {
+        _ if crate::containers::is_shulker_box_block(id) => Ticker::Shulker {
             facing: prop("facing")
                 .as_deref()
                 .and_then(direction_index)
@@ -1046,5 +1049,27 @@ impl BlockEntityAnims {
             anim.wobble = Some((false, w.progress(game_time, partial)));
         }
         anim
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ShulkerBoxBlockEntity.tick` is a shulker box's own: the block entity
+    /// type is looked up by the block's full id, so a vanilla box keeps its
+    /// ticker and a chest gets the lid's, not the box's.
+    #[test]
+    fn a_vanilla_shulker_box_keeps_its_ticker() {
+        let facing = |key: &str| (key == "facing").then(|| "up".to_owned());
+        assert_eq!(
+            ticker("minecraft:red_shulker_box", facing),
+            Some(Ticker::Shulker { facing: 1 })
+        );
+        assert_eq!(ticker("minecraft:shulker_box", facing), Some(Ticker::Shulker { facing: 1 }));
+        assert_eq!(
+            ticker("minecraft:waxed_copper_chest", facing),
+            Some(Ticker::Lid)
+        );
     }
 }
