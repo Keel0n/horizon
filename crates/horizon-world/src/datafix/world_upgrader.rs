@@ -349,15 +349,6 @@ impl RegionStorageUpgrader {
         else {
             return Ok(false);
         };
-        // A chunk the old file kept in its own `c.X.Z.mcc` is written back
-        // with the compression its payload already has: the payload is
-        // replaced before the stub is, so a stop in between leaves the old
-        // stub reading a stream of the same kind (`super::files`). Vanilla
-        // writes every chunk zlib, inline ones included.
-        let external = match open.reader.as_mut() {
-            Some((_, reader)) => reader.is_external(pos)?,
-            None => false,
-        };
         let mut root = record.nbt(limits)?;
         let version = as_int(root.tag.get("DataVersion"), -1);
         let mut changed = false;
@@ -371,6 +362,16 @@ impl RegionStorageUpgrader {
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as u32);
+            // A chunk the old file kept in its own `c.X.Z.mcc` is written back
+            // with the compression its payload already has: the payload is
+            // replaced before the stub is, so a stop in between leaves the old
+            // stub reading a stream of the same kind (`super::files`). Vanilla
+            // writes every chunk zlib, inline ones included. Asked only here:
+            // the stub read it costs is a syscall on every chunk of the world.
+            let external = match open.reader.as_mut() {
+                Some((_, reader)) => reader.is_external(pos)?,
+                None => false,
+            };
             let compression = if external {
                 record.compression
             } else {
@@ -391,8 +392,13 @@ impl RegionStorageUpgrader {
                     // Every chunk of the file is written again this run, so
                     // the recreate target is written whole: a header left by
                     // an interrupted run would publish a stub for a chunk this
-                    // run never wrote.
-                    let _ = fs::remove_file(&target);
+                    // run never wrote. A refusal here must not pass quietly:
+                    // the leftover would be published, the hole back.
+                    if let Err(e) = fs::remove_file(&target)
+                        && e.kind() != io::ErrorKind::NotFound
+                    {
+                        eprintln!("Failed to remove a leftover region file: {e}");
+                    }
                 }
                 open.writer = Some((target.clone(), RegionFile::open_writable(&target, true)?));
             }
