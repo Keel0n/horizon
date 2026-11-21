@@ -41,10 +41,11 @@ public final class VanillaPlayerTickOracle {
         ChunkAccess chunk;
         int next;
         /**
-         * The border `LivingEntity`'s base tick reads for a player: its default size
-         * (`WorldBorder.java:459`, 29,999,985 blocks from the centre) is outside every
-         * start position here, and a player past it is only damaged there, never moved,
-         * so the position is still the tick's own.
+         * The border `LivingEntity`'s base tick reads for a player: the level's own default
+         * (`WorldBorder.java:459`, 29,999,985 blocks from the centre). Six of the start
+         * positions below stand past it, so their tick also takes the border's damage
+         * (`LivingEntity.java:431-438`); damage moves nobody, so the position is still the
+         * tick's own move and `Player.tick`'s clamp.
          */
         net.minecraft.world.level.border.WorldBorder border;
 
@@ -180,8 +181,10 @@ public final class VanillaPlayerTickOracle {
     }
 
     /**
-     * The fixture's start positions and the velocity each tick starts with: inside the edge,
-     * past it on each axis, on it, above it, and two ticks that cross it in their own move.
+     * The fixture's start positions and the velocity each tick starts with, in the order
+     * `player_world_edge_parity_tests` repeats: inside the edge, past it on each axis, on it,
+     * at the clamp, above it, past it on both negative axes, and two ticks that cross it in
+     * their own move.
      */
     static final Object[][] CASES = {
         {"inside_x", 29999980.0, 64.0, 8.0, 0.0, 0.0, 0.0},
