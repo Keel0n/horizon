@@ -27,12 +27,17 @@ fn root(tag: Tag) -> NamedTag {
 }
 
 fn write_chunks(file: &Path, chunks: &[(ChunkPos, Tag)]) {
+    write_compressed(file, chunks, Compression::Zlib);
+}
+
+/// [`write_chunks`] with the chunks' compression, so that a chunk whose
+/// payload reaches 256 sectors is stored in its own `c.X.Z.mcc`.
+fn write_compressed(file: &Path, chunks: &[(ChunkPos, Tag)], compression: Compression) {
     fs::create_dir_all(file.parent().unwrap()).unwrap();
     let mut region = RegionFile::open_writable(file, true).unwrap();
     for (pos, tag) in chunks {
         let record =
-            ChunkRecord::from_nbt(&root(tag.clone()), Compression::Zlib, 1, Limits::default())
-                .unwrap();
+            ChunkRecord::from_nbt(&root(tag.clone()), compression, 1, Limits::default()).unwrap();
         region.write(*pos, &record).unwrap();
     }
 }
@@ -476,4 +481,101 @@ fn cancel_stops_every_worker_within_a_chunk() {
             assert!(before == after, "a canceled recreate changed the world");
         }
     }
+}
+
+/// Pseudo-random bytes: zlib cannot shrink them, so a chunk carrying them is
+/// 256 sectors or more whatever the compression and lives in its own `.mcc`.
+fn incompressible(len: usize) -> Vec<u8> {
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    (0..len)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as u8
+        })
+        .collect()
+}
+
+/// An entity chunk whose payload is 256 sectors or more: the region keeps it
+/// in `c.X.Z.mcc`, not inline.
+fn oversized_entity_chunk(version: i32, noise: &[u8]) -> Tag {
+    Tag::compound([
+        ("DataVersion", Tag::Int(version)),
+        ("Position", Tag::IntArray(vec![0, 0])),
+        ("Entities", Tag::List(vec![])),
+        ("Noise", Tag::ByteArray(noise.to_vec())),
+    ])
+}
+
+/// A chunk stored in its own `.mcc` keeps its payload through the upgrade,
+/// its compression with it: a stop between the payload and the new stub
+/// leaves the old stub reading a stream it can decode.
+#[test]
+fn an_oversized_chunk_survives_the_upgrade_with_its_compression() {
+    let noise = incompressible(1_100_000);
+    for recreate in [false, true] {
+        let world = TempWorld::new(&format!("mcc-{recreate}"));
+        let folder = world.folder(OVERWORLD, "entities");
+        let file = folder.join("r.0.0.mca");
+        let pos = ChunkPos::new(0, 0);
+        write_compressed(
+            &file,
+            &[(pos, oversized_entity_chunk(4000, &noise))],
+            Compression::None,
+        );
+        assert!(
+            folder.join("c.0.0.mcc").is_file(),
+            "recreate={recreate}: the chunk was not stored outside the region"
+        );
+
+        let progress = run(&world, false, recreate);
+        assert!(progress.is_finished(), "recreate={recreate}");
+
+        let after = read_chunk(&file, pos);
+        let after = after.unwrap_or_else(|| panic!("recreate={recreate}: the chunk was lost"));
+        assert_eq!(
+            as_int(after.get("DataVersion"), -1),
+            CURRENT,
+            "recreate={recreate}"
+        );
+        assert_eq!(
+            after.get("Noise"),
+            Some(&Tag::ByteArray(noise.clone())),
+            "recreate={recreate}: the payload changed"
+        );
+        assert!(!world.folder(OVERWORLD, "new_entities").exists());
+        assert!(
+            folder.join("c.0.0.mcc").is_file(),
+            "recreate={recreate}: the payload is not beside the region file"
+        );
+        let record = RegionFile::open(&file).unwrap().read(pos).unwrap();
+        let record = record.unwrap_or_else(|| panic!("recreate={recreate}: no record"));
+        assert_eq!(
+            record.compression,
+            Compression::None,
+            "recreate={recreate}: the stub names a compression the payload is not in"
+        );
+    }
+}
+
+/// A `new_` file left by a run that stopped before publishing is not the
+/// file this run writes: its header named a chunk the world no longer has.
+#[test]
+fn a_leftover_new_file_publishes_nothing_it_does_not_hold() {
+    let world = TempWorld::new("leftover");
+    let (kept, removed) = (ChunkPos::new(0, 0), ChunkPos::new(1, 0));
+    let file = world.folder(OVERWORLD, "entities").join("r.0.0.mca");
+    write_chunks(&file, &[(kept, entity_chunk(4000, 0, 0))]);
+    let leftover = world.folder(OVERWORLD, "new_entities").join("r.0.0.mca");
+    write_chunks(&leftover, &[(removed, entity_chunk(CURRENT, 1, 0))]);
+
+    let progress = run(&world, false, true);
+
+    assert!(progress.is_finished());
+    assert!(
+        read_chunk(&file, removed).is_none(),
+        "the leftover published a chunk the world does not have"
+    );
+    assert_eq!(version_of(&file, kept), CURRENT);
 }
