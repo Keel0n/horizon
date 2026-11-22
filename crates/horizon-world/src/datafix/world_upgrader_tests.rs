@@ -628,20 +628,8 @@ fn link_dir(link: &Path, target: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_dir(target, link).or_else(|_| {
-            let status = std::process::Command::new("cmd")
-                .arg("/C")
-                .arg("mklink")
-                .arg("/J")
-                .arg(link)
-                .arg(target)
-                .status()?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other("mklink /J failed"))
-            }
-        })
+        std::os::windows::fs::symlink_dir(target, link)
+            .or_else(|_| horizon_threads::junction(target, link))
     }
     #[cfg(not(any(unix, windows)))]
     {
