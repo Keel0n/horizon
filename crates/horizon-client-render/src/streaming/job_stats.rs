@@ -82,14 +82,6 @@ pub(super) fn mesh_cost_ns() -> Option<u64> {
     )
 }
 
-/// Seed the estimate for a test that runs the real admission loop: without this
-/// the estimate stays cold and prices nothing.
-#[cfg(test)]
-pub(super) fn seed_estimate_for_test(cost: u64) {
-    MESH_EWMA.store(cost, Ordering::Relaxed);
-    MESH_SAMPLES.store(MESH_WARMUP, Ordering::Relaxed);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

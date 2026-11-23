@@ -1221,14 +1221,15 @@ impl Streaming {
         context: Arc<WorkerContext>,
         threads: usize,
     ) -> Self {
-        // The first thread-CPU read measures the time-stamp counter's rate on
-        // Windows (a 20 ms sleep in `horizon_threads::thread_cpu`, once per
-        // process behind a `OnceLock`). Take it here on the frame thread, when
-        // the world opens, rather than inside the first mesh job on a worker
-        // thread where it would delay the first mesh. Nothing earlier in startup
-        // calls it: the title screen's spans time wall only, and the streamer
-        // fields are the only always-on consumer of thread CPU in the render
-        // crate. Every later call divides cycles by the rate and costs nothing.
+        // The first thread-CPU read calibrates the time-stamp counter rate on
+        // Windows (a 20 ms sleep in `horizon_threads::thread_cpu`, behind a
+        // `OnceLock` — paid once per process by whichever thread calls first).
+        // `Game::new` creates a placeholder `Streaming` on the frame thread
+        // before any world opens, so the rate is warm when the first world's
+        // real `Streaming::new` wakes on its "World initialization" thread, and
+        // the first mesh job on a worker reads only the calibrated rate. With
+        // `HORIZON_SPIKES` the title screen's spans also read thread CPU, so the
+        // cost could be paid even earlier; taking it here guarantees it.
         let _ = crate::spans::thread_cpu();
         let shared = Arc::new(Shared {
             queue: Mutex::new(BinaryHeap::new()),
@@ -2444,6 +2445,7 @@ impl Streaming {
                 &mut candidates,
                 room,
                 self.workers,
+                job_stats::mesh_cost_ns(),
                 &settings,
                 &mut self.meshed,
                 &mut self.meshing,
@@ -3734,6 +3736,7 @@ fn submit_mesh_candidates(
     candidates: &mut Vec<(i64, i32, i32, SectionMask)>,
     room: usize,
     workers: usize,
+    estimate: Option<u64>,
     settings: &MeshSettings,
     meshed: &mut FxHashSet<(i32, i32)>,
     meshing: &mut FxHashMap<(i32, i32, i32), u64>,
@@ -3763,8 +3766,8 @@ fn submit_mesh_candidates(
     // rank. A pool with nothing in flight takes the first column however dear it
     // is, or a column costlier than the whole slice would wait for room it can
     // never have; until the estimate warms up `fits` prices nothing, and this is
-    // the room check it was (#18239).
-    let estimate = job_stats::mesh_cost_ns();
+    // the room check it was (#18239). `estimate` is passed in so tests can
+    // price columns without touching global state.
     let slice = (workers as u64).saturating_mul(MESH_SLICE_NANOS);
     let air = world.air.0;
     let mut remaining = room;
@@ -4561,6 +4564,7 @@ mod tests {
             &mut candidates,
             3,
             7,
+            None,
             &settings,
             &mut meshed,
             &mut meshing,
@@ -4594,6 +4598,7 @@ mod tests {
             &mut candidates,
             22,
             7,
+            None,
             &settings,
             &mut meshed,
             &mut meshing,
@@ -4622,6 +4627,7 @@ mod tests {
             &mut candidates,
             10,
             7,
+            None,
             &settings,
             &mut meshed,
             &mut meshing,
@@ -4655,8 +4661,8 @@ mod tests {
         // nearest column's 24 dirty sections cost 120 ms and are refused because
         // only 115 ms remains. The next column's single section at 5 ms would
         // fit — but `break` prevents it, so nothing farther is admitted.
-        job_stats::seed_estimate_for_test(5_000_000);
         let workers = 7usize;
+        let estimate = Some(5_000_000u64); // 5 ms a section, passed in (no globals)
         // slice = 7 × 25 ms = 175 ms; 12 in flight × 5 ms = 60 ms,
         // left = 115 ms; near column 24 × 5 = 120 ms > left → refuse.
 
@@ -4723,6 +4729,7 @@ mod tests {
             &mut candidates,
             24,
             workers,
+            estimate,
             &settings,
             &mut meshed,
             &mut meshing,
@@ -4750,6 +4757,40 @@ mod tests {
             );
         }
         assert!(queue.is_empty(), "nothing queued");
+
+        // After the pool drains the empty-pool exception admits the heavy
+        // column however dear it is, so the queue never starves.
+        meshing.clear();
+        let mut candidates: Vec<_> = world
+            .dirty_sections
+            .columns()
+            .map(|((x, z), mask)| (i64::from(x * x + z * z), x, z, mask))
+            .collect();
+        let submitted = submit_mesh_candidates(
+            &mut world,
+            &mut candidates,
+            24,
+            workers,
+            estimate,
+            &settings,
+            &mut meshed,
+            &mut meshing,
+            &mut sequence,
+            &mut order,
+            &mut queue,
+        );
+        assert!(
+            submitted > 0,
+            "empty pool: the heavy column starts however dear it is"
+        );
+        // The nearest heavy column is gone from dirty_sections.
+        let mut admitted = 0;
+        for sy in 0..24 {
+            if !world.dirty_sections.contains(&(0, sy, 0)) {
+                admitted += 1;
+            }
+        }
+        assert!(admitted > 0, "some sections of the heavy column were taken");
     }
 
     /// Whether the forgotten columns are few (looked up by key) or many
