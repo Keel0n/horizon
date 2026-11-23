@@ -2630,6 +2630,37 @@ impl Streaming {
         self.lighting.clear();
         self.jobs.notify_all();
     }
+    /// Gives back the capacity the column maps and per-update scratch grew to
+    /// at a larger view, once it has settled after a render distance went
+    /// down (`Game::update_world`, #19332). The entries left are the smaller
+    /// view's; the maps keep their room otherwise, counted by the heap census
+    /// under `streaming_plan`. Call only with no work in flight.
+    pub fn shrink_to_fit(&mut self) {
+        self.dropped_new.shrink_to_fit();
+        self.generating.shrink_to_fit();
+        self.protos.shrink_to_fit();
+        self.light_views.shrink_to_fit();
+        self.decorated.shrink_to_fit();
+        self.decorating_finals.shrink_to_fit();
+        self.viewing.shrink_to_fit();
+        self.finishing.shrink_to_fit();
+        self.lighting.shrink_to_fit();
+        self.meshing.shrink_to_fit();
+        self.compile_started.shrink_to_fit();
+        self.lit.shrink_to_fit();
+        self.meshed.shrink_to_fit();
+        self.waiting.shrink_to_fit();
+        self.written.shrink_to_fit();
+        self.light_snapshots.shrink_to_fit();
+        self.deferred.shrink_to_fit();
+        self.received_scratch.shrink_to_fit();
+        self.finalize_scratch.shrink_to_fit();
+        self.light_scratch.shrink_to_fit();
+        self.gone_scratch.shrink_to_fit();
+        self.mesh_candidates_scratch.shrink_to_fit();
+        self.mesh_columns_scratch.shrink_to_fit();
+        self.light_log.shrink_to_fit();
+    }
     /// Save what generation holds outside the world: the proto chunks
     /// decoration wrote to. With `wait`, the decorations, columns and saves
     /// in flight are waited for first (their proto chunks are out in the
