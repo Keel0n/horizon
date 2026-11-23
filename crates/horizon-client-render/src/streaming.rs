@@ -2955,9 +2955,11 @@ impl Streaming {
                     .shared
                     .aborted
                     .load(std::sync::atomic::Ordering::Relaxed)
-                    || self.shared.emergency.get().is_some_and(|e| {
-                        e.load(std::sync::atomic::Ordering::Relaxed)
-                    })
+                    || self
+                        .shared
+                        .emergency
+                        .get()
+                        .is_some_and(|e| e.load(std::sync::atomic::Ordering::Relaxed))
                 {
                     break;
                 }
@@ -3023,9 +3025,11 @@ impl Streaming {
                 .shared
                 .aborted
                 .load(std::sync::atomic::Ordering::Relaxed)
-                || self.shared.emergency.get().is_some_and(|e| {
-                    e.load(std::sync::atomic::Ordering::Relaxed)
-                })
+                || self
+                    .shared
+                    .emergency
+                    .get()
+                    .is_some_and(|e| e.load(std::sync::atomic::Ordering::Relaxed))
             {
                 break;
             }
