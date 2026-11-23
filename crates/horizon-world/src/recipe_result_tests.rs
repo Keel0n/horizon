@@ -59,8 +59,11 @@ fn bare_smelting_ingredient_names_minecrafts() {
     .unwrap();
     let tag_dir = root.join("data/minecraft/tags/item");
     std::fs::create_dir_all(&tag_dir).unwrap();
-    std::fs::write(tag_dir.join("ores.json"), r#"{"values":["minecraft:copper_ore"]}"#)
-        .unwrap();
+    std::fs::write(
+        tag_dir.join("ores.json"),
+        r#"{"values":["minecraft:copper_ore"]}"#,
+    )
+    .unwrap();
     std::fs::write(
         recipe_dir.join("tag.json"),
         r##"{"type":"minecraft:smelting","ingredient":"#ores","result":{"id":"minecraft:copper_ingot","count":1}}"##,
@@ -68,7 +71,10 @@ fn bare_smelting_ingredient_names_minecrafts() {
     .unwrap();
     let loot_dir = root.join("data/minecraft/loot_table");
     std::fs::create_dir_all(&loot_dir).unwrap();
-    for (name, item) in [("iron_ore", "minecraft:iron_ore"), ("copper_ore", "minecraft:copper_ore")] {
+    for (name, item) in [
+        ("iron_ore", "minecraft:iron_ore"),
+        ("copper_ore", "minecraft:copper_ore"),
+    ] {
         std::fs::write(
             loot_dir.join(format!("{name}.json")),
             format!(
@@ -80,10 +86,22 @@ fn bare_smelting_ingredient_names_minecrafts() {
     std::fs::write(root.join("items.json"), "{}").unwrap();
     let defaults = crate::item_defaults::read(&root).unwrap();
     let data = LootData::load(&root, &PackOverlay::NONE, &defaults).unwrap();
-    let drops = data.roll("minecraft:iron_ore", &mut LegacyRandom::new(1), 0.0, None, None);
+    let drops = data.roll(
+        "minecraft:iron_ore",
+        &mut LegacyRandom::new(1),
+        0.0,
+        None,
+        None,
+    );
     assert_eq!(drops.len(), 1);
     assert_eq!(&*drops[0].item, "minecraft:iron_ingot");
-    let drops = data.roll("minecraft:copper_ore", &mut LegacyRandom::new(1), 0.0, None, None);
+    let drops = data.roll(
+        "minecraft:copper_ore",
+        &mut LegacyRandom::new(1),
+        0.0,
+        None,
+        None,
+    );
     assert_eq!(drops.len(), 1);
     assert_eq!(&*drops[0].item, "minecraft:copper_ingot");
     let _ = std::fs::remove_dir_all(&root);

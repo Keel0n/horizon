@@ -364,15 +364,14 @@ mod tests {
             vec!["minecraft:oak_planks".to_owned()],
         );
         let v: Value = serde_json::json!("#planks");
-        let walked = WalkedIngredient::walk_resolved(
-            &v,
-            &tags,
-            &|_| None,
-            &|_| None,
-            &|_| None,
-            &|id| Some(id.to_owned()),
+        let walked =
+            WalkedIngredient::walk_resolved(&v, &tags, &|_| None, &|_| None, &|_| None, &|id| {
+                Some(id.to_owned())
+            });
+        assert!(
+            walked.is_some(),
+            "bare #planks should resolve to minecraft:planks"
         );
-        assert!(walked.is_some(), "bare #planks should resolve to minecraft:planks");
         assert_eq!(walked.unwrap().order, ["minecraft:oak_planks"]);
     }
 }
