@@ -27,7 +27,8 @@ const SLEEP_GAP: Duration = Duration::from_secs(30);
 #[cfg(all(unix, not(target_os = "macos")))]
 const SYSFS: &str = "/sys/class/power_supply";
 
-/// `BatteryFlag`'s "no system battery" bit (`GetSystemPowerStatus`). Read by
+/// `BatteryFlag`'s "no system battery" bit (`GetSystemPowerStatus`). A flag of 255 means every
+/// bit is unknown, this one included, so it says nothing about a battery being absent. Read by
 /// [`windows_reading_from`], which only Windows calls (a test calls it anywhere).
 #[cfg_attr(not(windows), allow(dead_code))]
 const NO_BATTERY: u8 = 128;
@@ -417,14 +418,15 @@ fn windows_reading() -> Reading {
 }
 
 /// `GetSystemPowerStatus`'s answer as a reading: `ACLineStatus` (1 on mains, 0 on the battery,
-/// 255 for the API's own "unknown"), `BatteryFlag`'s [`NO_BATTERY`] bit, and `SystemStatusFlag`'s
-/// first bit, the energy saver. A machine that has no battery has no supply to name, and stays
-/// unknown: [`crate::power`] gives `None` for it, as it does on the other two platforms' desktops.
+/// 255 for the API's own "unknown"), `BatteryFlag`'s [`NO_BATTERY`] bit (a flag of 255 is the
+/// API's "unknown", not "no battery"), and `SystemStatusFlag`'s first bit, the energy saver. A
+/// machine that has no battery has no supply to name, and stays unknown: [`crate::power`] gives
+/// `None` for it, as it does on the other two platforms' desktops.
 /// Built on every platform so a test can check the parsing anywhere; only Windows calls it.
 /// Windows reports no thermal state to a game.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_reading_from(ac_line: u8, battery_flag: u8, system_status: u8) -> Reading {
-    let source = if battery_flag & NO_BATTERY != 0 {
+    let source = if battery_flag != 255 && battery_flag & NO_BATTERY != 0 {
         Source::Unknown
     } else {
         match ac_line {
@@ -686,6 +688,10 @@ mod tests {
         );
         // 255 is the API's own "I don't know", with a battery present or without.
         assert_eq!(windows_reading_from(255, 0, 0).source, Source::Unknown);
+        // `BatteryFlag` 255: every bit unknown, the "no battery" bit included, so a known
+        // `ACLineStatus` still names the source.
+        assert_eq!(windows_reading_from(1, 255, 0).source, Source::Ac);
+        assert_eq!(windows_reading_from(0, 255, 0).source, Source::Battery);
         // Windows tells a game nothing about heat.
         assert_eq!(ac.thermal, Thermal::Unknown);
         assert_eq!(battery.thermal, Thermal::Unknown);
