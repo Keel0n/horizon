@@ -1221,8 +1221,14 @@ impl Streaming {
         context: Arc<WorkerContext>,
         threads: usize,
     ) -> Self {
-        // The first thread-CPU read measures the time-stamp counter's rate on Windows and
-        // sleeps 20 ms: take it here, not inside the first mesh job.
+        // The first thread-CPU read measures the time-stamp counter's rate on
+        // Windows (a 20 ms sleep in `horizon_threads::thread_cpu`, once per
+        // process behind a `OnceLock`). Take it here on the frame thread, when
+        // the world opens, rather than inside the first mesh job on a worker
+        // thread where it would delay the first mesh. Nothing earlier in startup
+        // calls it: the title screen's spans time wall only, and the streamer
+        // fields are the only always-on consumer of thread CPU in the render
+        // crate. Every later call divides cycles by the rate and costs nothing.
         let _ = crate::spans::thread_cpu();
         let shared = Arc::new(Shared {
             queue: Mutex::new(BinaryHeap::new()),
@@ -3774,7 +3780,14 @@ fn submit_mesh_candidates(
         let left = estimate
             .map(|cost| slice.saturating_sub((meshing.len() as u64).saturating_mul(cost)));
         if !fits(left, cost, meshing.is_empty()) {
-            continue;
+            // Stop, don't skip: the candidates are nearest first, so admitting a
+            // farther column that fits while the nearer one does not would let a
+            // stream of cheap edits keep the heavy nearest column deferred —
+            // `meshing` never empties, so its empty-pool exception never fires
+            // and a column dearer than the whole slice could wait forever. Breaking
+            // keeps rank order: nothing starts until the pool drains below this
+            // column's cost, and the empty-pool exception then lets it through.
+            break;
         }
         let Some(region) = Streaming::region(world, x, z) else {
             continue;
@@ -4628,6 +4641,115 @@ mod tests {
             .collect();
         assert_eq!(all.len(), 28);
         assert_eq!(meshing.len(), 28);
+    }
+
+    /// A heavy nearest column that does not fit the slice stops admission
+    /// (`break`, not `continue`): farther columns cannot bypass it and keep it
+    /// waiting while the pool never empties (#18239, kacpherek review). The
+    /// admission loop runs through the real `submit_mesh_candidates`, not a copy
+    /// of it, so a regression in this gate catches a real bug.
+    #[test]
+    fn cost_rejection_stops_admission_and_preserves_rank_order() {
+        // The estimate is warm at 5 ms a section: 12 sections in flight cost
+        // 60 ms, leaving 115 ms of the 175 ms slice for seven workers. The
+        // nearest column's 24 dirty sections cost 120 ms and are refused because
+        // only 115 ms remains. The next column's single section at 5 ms would
+        // fit — but `break` prevents it, so nothing farther is admitted.
+        job_stats::seed_estimate_for_test(5_000_000);
+        let workers = 7usize;
+        // slice = 7 × 25 ms = 175 ms; 12 in flight × 5 ms = 60 ms,
+        // left = 115 ms; near column 24 × 5 = 120 ms > left → refuse.
+
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        for z in -1..=1 {
+            for x in -1..=4 {
+                let mut chunk = Chunk::empty(x, z);
+                if x == 0 && z == 0 {
+                    // Heavy column: blocks in eight sections so
+                    // order_column_sections returns non-zero count and the gate
+                    // — not a count==0 continue — is what refuses it.
+                    for sy in 0..8 {
+                        chunk.set(0, sy * 16, 0, 1);
+                    }
+                } else if x >= 1 && x <= 3 && z == 0 {
+                    // Light columns: one block each.
+                    chunk.set(0, x * 16, 0, 1);
+                }
+                world.chunks.insert((x, z), Arc::new(chunk));
+            }
+        }
+        world
+            .dirty_sections
+            .insert_column_mask((0, 0), SectionMask::below(24));
+        for x in 1..=3 {
+            world
+                .dirty_sections
+                .insert_column_mask((x, 0), SectionMask::below(1));
+        }
+
+        let settings = MeshSettings {
+            nether: false,
+            shader_pack_lighting: false,
+            separate_ao: false,
+            shader_pack: false,
+            looks: false,
+            zoom: BiomeZoom::new(0),
+            blend_radius: 0,
+            smooth_lighting: true,
+            cutout_leaves: true,
+            opaque_ice: false,
+            translucent_layers: Arc::from([]),
+            block_layers: Arc::default(),
+            leaf_culling: LeafCullingMode::Off,
+        };
+        let mut meshed = FxHashSet::default();
+        let mut meshing = FxHashMap::default();
+        // Simulate 12 sections in flight at 5 ms each = 60 ms.
+        // left = 175 - 60 = 115 ms; near column 24 × 5 = 120 ms > 115 → refuse.
+        for sy in 0..12 {
+            meshing.insert((100, sy as i32, 100), sy as u64);
+        }
+        let mut sequence = meshing.len() as u64;
+        let mut order = 0u64;
+        let mut queue = BinaryHeap::new();
+
+        let mut candidates: Vec<_> = world
+            .dirty_sections
+            .columns()
+            .map(|((x, z), mask)| (i64::from(x * x + z * z), x, z, mask))
+            .collect();
+        let submitted = submit_mesh_candidates(
+            &mut world,
+            &mut candidates,
+            24,
+            workers,
+            &settings,
+            &mut meshed,
+            &mut meshing,
+            &mut sequence,
+            &mut order,
+            &mut queue,
+        );
+        // Nothing admitted: the nearest (heavy) column is refused by cost,
+        // and `break` stops the loop before it reaches the light columns.
+        assert_eq!(
+            submitted, 0,
+            "no column admitted: heavy nearest refused, break prevents farther"
+        );
+        // Every column stays dirty.
+        for sy in 0..24 {
+            assert!(
+                world.dirty_sections.contains(&(0, sy, 0)),
+                "heavy column section stays dirty"
+            );
+        }
+        for x in 1..=3 {
+            assert!(
+                world.dirty_sections.contains(&(x, 0, 0)),
+                "light column {x} not admitted past a refused nearer one"
+            );
+        }
+        assert!(queue.is_empty(), "nothing queued");
     }
 
     /// Whether the forgotten columns are few (looked up by key) or many
