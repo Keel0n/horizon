@@ -2316,7 +2316,6 @@ fn a_stab_keeps_the_move_behind_it_in_its_tick() {
     assert_eq!(g.position[0], before.0[0] + 0.3, "the move was not handled");
 }
 
-
 /// #17206's review: a rider's MoveVehicle and its ClientTickEnd in one drain.
 /// The hub hands the game the move and queues the tick-end reset behind it, so
 /// the game sets the rider's movement before the reset keeps it for the tick
@@ -2411,8 +2410,7 @@ fn a_vehicle_move_and_its_tick_end_keep_packet_order() {
     // The next tick has no move of either: its tick end zeroes the movement.
     hub.client_tick_end(conn);
     assert_eq!(
-        hub.guests[0].known_movement,
-        [0.0; 3],
+        hub.guests[0].known_movement, [0.0; 3],
         "a client tick with no move of either has none"
     );
 }
