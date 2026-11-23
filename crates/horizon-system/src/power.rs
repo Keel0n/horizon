@@ -225,7 +225,12 @@ impl Channel {
 /// reading that failed and answered "unknown" in between is not a state, and the machine coming
 /// back to what it was is not a change. The first known reading is where the channel starts, not a
 /// change: a game that starts on the battery doesn't announce it as one.
-fn announced(last: Option<Reading>, last_known: Option<Source>, next: Reading, slept: bool) -> bool {
+fn announced(
+    last: Option<Reading>,
+    last_known: Option<Source>,
+    next: Reading,
+    slept: bool,
+) -> bool {
     if slept {
         return true;
     }
@@ -234,8 +239,7 @@ fn announced(last: Option<Reading>, last_known: Option<Source>, next: Reading, s
     };
     last.saver != next.saver
         || last.thermal != next.thermal
-        || (next.source != Source::Unknown
-            && last_known.is_some_and(|known| known != next.source))
+        || (next.source != Source::Unknown && last_known.is_some_and(|known| known != next.source))
 }
 
 /// Both clocks of one tick. A suspend stops the monotonic clock on Linux and not everywhere, and
