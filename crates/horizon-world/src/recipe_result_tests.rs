@@ -63,7 +63,7 @@ fn bare_smelting_ingredient_names_minecrafts() {
         .unwrap();
     std::fs::write(
         recipe_dir.join("tag.json"),
-        r#"{"type":"minecraft:smelting","ingredient":"#ores","result":{"id":"minecraft:copper_ingot","count":1}}"#,
+        r##"{"type":"minecraft:smelting","ingredient":"#ores","result":{"id":"minecraft:copper_ingot","count":1}}"##,
     )
     .unwrap();
     let loot_dir = root.join("data/minecraft/loot_table");
