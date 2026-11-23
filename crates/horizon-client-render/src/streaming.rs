@@ -3780,8 +3780,8 @@ fn submit_mesh_candidates(
         let cost = estimate.map_or(0, |cost| cost.saturating_mul(sections.len() as u64));
         // Recomputed per column on purpose: `meshing` grows as the loop
         // admits, and that growth is what prices the sections just taken.
-        let left = estimate
-            .map(|cost| slice.saturating_sub((meshing.len() as u64).saturating_mul(cost)));
+        let left =
+            estimate.map(|cost| slice.saturating_sub((meshing.len() as u64).saturating_mul(cost)));
         if !fits(left, cost, meshing.is_empty()) {
             // Stop, don't skip: the candidates are nearest first, so admitting a
             // farther column that fits while the nearer one does not would let a
@@ -4713,7 +4713,7 @@ mod tests {
         // Simulate 12 sections in flight at 5 ms each = 60 ms.
         // left = 175 - 60 = 115 ms; near column 24 × 5 = 120 ms > 115 → refuse.
         for sy in 0..12 {
-            meshing.insert((100, sy as i32, 100), sy as u64);
+            meshing.insert((100, sy, 100), sy as u64);
         }
         let mut sequence = meshing.len() as u64;
         let mut order = 0u64;
