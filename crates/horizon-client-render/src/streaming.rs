@@ -2791,6 +2791,13 @@ impl Streaming {
             return SaveStep::Protos(self.checkout_protos(written));
         }
         while self.save_waits() {
+            if self
+                .shared
+                .aborted
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.shared.done.recv_timeout(left) {
                 Some(Done::Decorated(x, z, region, finals, writes)) => {
@@ -2888,17 +2895,20 @@ impl Streaming {
             }
         }
     }
-    /// Make a column resident for an immediate read.
+    /// Make a column resident for an immediate read, returning whether the column
+    /// finished. A column whose generation failed returns false; the caller may
+    /// select another candidate.
     /// The temporary request serves the same purpose as `ServerChunkCache.getChunk(FULL)`.
-    pub fn load_full_chunk(&mut self, world: &mut World, key: (i32, i32)) {
+    pub fn load_full_chunk(&mut self, world: &mut World, key: (i32, i32)) -> bool {
         if world.chunks.contains_key(&key) {
-            return;
+            return true;
         }
         self.rank_full_task(key.0, key.1);
         // Full columns finish out to radius + 1. This request is for one column.
         self.extra.push((key, -1));
-        self.wait_for_full_chunk(world, key);
+        let loaded = self.wait_for_full_chunk(world, key);
         self.extra.pop();
+        loaded
     }
     pub fn band(&self) -> Option<Band> {
         self.band
@@ -2917,13 +2927,13 @@ impl Streaming {
         if forced && changed {
             while !world.chunks.contains_key(&(x, z)) {
                 assert!(!self.paused, "forced chunk load before streaming started");
-                assert!(
-                    !self
-                        .shared
-                        .aborted
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                    "forced chunk load after generation stopped"
-                );
+                if self
+                    .shared
+                    .aborted
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    break;
+                }
                 // Pump the existing generation queue. Keep unloads for the
                 // normal owner update, which saves entities and notifies mods.
                 let mut plan = self.plan_update(world);
@@ -2974,17 +2984,21 @@ impl Streaming {
         changed
     }
 
-    /// Pump Horizon's generation and disk reads for a requested column.
-    fn wait_for_full_chunk(&mut self, world: &mut World, key: (i32, i32)) {
+    /// Pump Horizon's generation and disk reads for a requested column,
+    /// returning whether the column finished. A column whose generation failed
+    /// or whose dependencies cannot progress returns false: the caller may
+    /// select another candidate. The wait exits when generation is aborted so
+    /// the server can reach its emergency save.
+    fn wait_for_full_chunk(&mut self, world: &mut World, key: (i32, i32)) -> bool {
         while !world.chunks.contains_key(&key) {
             assert!(!self.paused, "chunk load before streaming started");
-            assert!(
-                !self
-                    .shared
-                    .aborted
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                "chunk load after generation stopped"
-            );
+            if self
+                .shared
+                .aborted
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
             // Pump the existing generation queue. Keep unloads for the
             // normal owner update, which saves entities and notifies mods.
             let mut plan = self.plan_update(world);
@@ -2993,10 +3007,31 @@ impl Streaming {
             let (meshes, unloaded) = self.finish_update(world, plan);
             debug_assert!(unloaded.is_empty());
             self.free(meshes);
-            if !world.chunks.contains_key(&key) {
-                self.wait(std::time::Duration::from_millis(5));
+            if world.chunks.contains_key(&key) {
+                return true;
             }
+            // A generation failure or a column that can no longer progress
+            // (a failed predecessor past the reach of the check above, for
+            // one): waiting again would never load the column.
+            if !self.chunks_in_flight()
+                && blocked_by_a_failed_generation(&self.failed, world, self.decorates, key.0, key.1)
+            {
+                break;
+            }
+            if !self.chunks_in_flight()
+                && self.saving == 0
+                && self.pending() == 0
+                && self
+                    .shared
+                    .done
+                    .try_lock()
+                    .is_some_and(|done| done.is_empty())
+            {
+                break;
+            }
+            self.wait(std::time::Duration::from_millis(5));
         }
+        world.chunks.contains_key(&key)
     }
 
     /// Release every `/forceload`ed chunk (`/forceload remove all`, a game-test

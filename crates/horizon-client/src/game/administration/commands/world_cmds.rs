@@ -2014,7 +2014,9 @@ impl Game<'_> {
         if chunk.0.abs().max(chunk.1.abs()) > MAX_CHUNK_COORDINATE {
             return None;
         }
-        self.streaming.load_full_chunk(&mut self.world, chunk);
+        if !self.streaming.load_full_chunk(&mut self.world, chunk) {
+            return None;
+        }
         let air = |y: i32| {
             if !self.world.shape.contains_y(y) {
                 return true;
