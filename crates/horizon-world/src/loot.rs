@@ -521,6 +521,30 @@ pub fn recipe_result_id(result: &Value) -> Option<String> {
     };
     Some(parse_or_keep(id))
 }
+/// `Ingredient.CODEC` (`HolderSetCodec`): each id or `#tag` a smelting recipe's
+/// ingredient names is read through `Identifier.parse` (`TagKey.hashedCodec` for
+/// tags, `Item.CODEC` for items), so a bare one names `minecraft`'s. Canonical
+/// here, at the load boundary, so `furnace_smelt`'s `item_in` matches the
+/// canonical stack id and the tag table's canonical keys. An id `Identifier.parse`
+/// refuses is kept as written, as `recipe_result_id` does.
+fn canonical_ingredient(v: &Value) -> Value {
+    let canonical = |s: &str| match s.strip_prefix('#') {
+        Some(tag) => format!("#{}", parse_or_keep(tag)),
+        None => parse_or_keep(s),
+    };
+    match v {
+        Value::String(s) => Value::String(canonical(s)),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|e| match e {
+                    Value::String(s) => Value::String(canonical(s)),
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
 /// `LevelBasedValue.calculate`.
 pub fn level_value(v: &Value, level: i32) -> f32 {
     match v {
@@ -977,7 +1001,7 @@ impl LootData {
             .filter_map(|r| {
                 let result = recipe_result_id(&r["result"])?.to_owned();
                 let count = r["result"]["count"].as_i64().unwrap_or(1) as i32;
-                Some((r["ingredient"].clone(), result, count))
+                Some((canonical_ingredient(&r["ingredient"]), result, count))
             })
             .collect();
         let binding = holder_sets::Binding::load(root, overlay, &items, &enchantments)?;
@@ -4447,6 +4471,53 @@ mod enchanted_level_tests {
             expected.iter().map(|s| s.count).collect::<Vec<_>>()
         );
         assert_eq!(asked.next_long(), plain.next_long());
+    }
+
+    /// `SmeltItemFunction.run` looks up a smelting recipe whose ingredient
+    /// `AbstractCookingRecipe` read via `Ingredient.CODEC` (`HolderSetCodec`):
+    /// a bare id or `#tag` names `minecraft`'s, so `iron_ore` smelts
+    /// `minecraft:iron_ore` and `#ores` resolves the `minecraft:ores` tag.
+    #[test]
+    fn bare_smelting_ingredient_names_minecrafts() {
+        let root = std::env::temp_dir().join(format!("loot-smelt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let recipe_dir = root.join("data/minecraft/recipe");
+        std::fs::create_dir_all(&recipe_dir).unwrap();
+        std::fs::write(
+            recipe_dir.join("bare.json"),
+            r#"{"type":"minecraft:smelting","ingredient":"iron_ore","result":{"id":"minecraft:iron_ingot","count":1}}"#,
+        )
+        .unwrap();
+        let tag_dir = root.join("data/minecraft/tags/item");
+        std::fs::create_dir_all(&tag_dir).unwrap();
+        std::fs::write(tag_dir.join("ores.json"), r#"{"values":["minecraft:copper_ore"]}"#)
+            .unwrap();
+        std::fs::write(
+            recipe_dir.join("tag.json"),
+            r#"{"type":"minecraft:smelting","ingredient":"#ores","result":{"id":"minecraft:copper_ingot","count":1}}"#,
+        )
+        .unwrap();
+        let loot_dir = root.join("data/minecraft/loot_table");
+        std::fs::create_dir_all(&loot_dir).unwrap();
+        for (name, item) in [("iron_ore", "minecraft:iron_ore"), ("copper_ore", "minecraft:copper_ore")] {
+            std::fs::write(
+                loot_dir.join(format!("{name}.json")),
+                format!(
+                    r#"{{"pools":[{{"rolls":1,"entries":[{{"type":"minecraft:item","name":"{item}","modifier":[{{"type":"minecraft:furnace_smelt"}}]}}]}}]}}"#
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let defaults = crate::item_defaults::read(&root).unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE, &defaults).unwrap();
+        let drops = data.roll("minecraft:iron_ore", &mut LegacyRandom::new(1), 0.0, None, None);
+        assert_eq!(drops.len(), 1);
+        assert_eq!(&*drops[0].item, "minecraft:iron_ingot");
+        let drops = data.roll("minecraft:copper_ore", &mut LegacyRandom::new(1), 0.0, None, None);
+        assert_eq!(drops.len(), 1);
+        assert_eq!(&*drops[0].item, "minecraft:copper_ingot");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
