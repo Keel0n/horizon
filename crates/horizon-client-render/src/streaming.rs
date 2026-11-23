@@ -3478,7 +3478,11 @@ impl Drop for Streaming {
             }
         }
         // `jobs` leaves the pool after this, once its running jobs are
-        // done; the jobs still queued go with the queue.
+        // done; the jobs still queued go with the queue. With the source
+        // gone nobody calls `all_idle` again, so the shared light scratch
+        // pool would keep its full height buffers into the title screen
+        // (#19332); free them here, the next world's jobs build them again.
+        crate::light::release_scratch();
     }
 }
 /// The queued jobs' priorities computed again from each one's column
