@@ -4677,7 +4677,7 @@ mod tests {
                     for sy in 0..8 {
                         chunk.set(0, sy * 16, 0, 1);
                     }
-                } else if x >= 1 && x <= 3 && z == 0 {
+                } else if (1..=3).contains(&x) && z == 0 {
                     // Light columns: one block each.
                     chunk.set(0, x * 16, 0, 1);
                 }
