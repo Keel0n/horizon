@@ -1656,14 +1656,36 @@ mod controller_tests {
             pitch: 0.0,
             on_ground: true,
         };
+        // The rider's client sends its vehicle's move and its tick end in one
+        // client tick, and both go through the inbox: the hub hands the game the
+        // MoveVehicle and queues the tick-end reset behind it, so the game sets
+        // the rider's movement before the reset keeps it for the tick. Calling
+        // guest_move_vehicle directly would apply the move ahead of the drain and
+        // miss that order (#17206's review): the reset used to run inline before
+        // the queued move, leaving the flag set and a stale movement kept into the
+        // next tick.
+        host.hub.guests.update(0, |g| {
+            g.inbox.push_back(crate::lan::guest::InboxItem::Packet(
+                play::Serverbound::MoveVehicle(move_to(4.9)),
+                None,
+            ));
+            g.inbox.push_back(crate::lan::guest::InboxItem::Packet(
+                play::Serverbound::ClientTickEnd(horizon_protocol::packets::Empty),
+                None,
+            ));
+        });
         game.lan = Some(host);
-        game.guest_move_vehicle(2, &move_to(4.9));
+        game.tick_lan_packets();
         host = game.lan.take().unwrap();
         assert_eq!(game.mobs[0].position.x, 4.9, "the guest moves the horse");
         let moved = host.hub.guests[0].known_movement;
         assert!(
             (moved[0] - 0.4).abs() < 1.0e-9 && moved[1] == 0.0 && moved[2] == 0.0,
             "the horse's move is its rider's known movement: {moved:?}"
+        );
+        assert!(
+            !host.hub.guests[0].movement_this_tick,
+            "the tick end cleared the flag after the queued move, not before it"
         );
         // The horse's own tick kept its position as the last one it had
         // (`Entity.computeSpeed`'s last known position, which a mob that its
@@ -1679,33 +1701,27 @@ mod controller_tests {
             Some(moved),
             "a spear charge on horseback carries the horse's speed"
         );
-        // handleClientTickEnd keeps the move of the tick it came in...
-        let expected = [moved, [0.0; 3]];
-        for (round, want) in expected.iter().enumerate() {
-            host.hub.guests.update(0, |g| {
-                g.inbox.push_back(crate::lan::guest::InboxItem::Packet(
-                    play::Serverbound::ClientTickEnd(horizon_protocol::packets::Empty),
-                    None,
-                ));
-            });
-            game.lan = Some(host);
-            game.tick_lan_packets();
-            host = game.lan.take().unwrap();
-            assert_eq!(
-                host.hub.guests[0].known_movement,
-                *want,
-                "{}",
-                if round == 0 {
-                    "the move's own tick keeps it"
-                } else {
-                    "a client tick with no move of either has none"
-                }
-            );
-            // The next client tick: the level pass's packet gate opens again.
-            game.lan = Some(host);
-            game.tick_lan(false);
-            host = game.lan.take().unwrap();
-        }
+        // The next client tick: the level pass's packet gate opens again.
+        game.lan = Some(host);
+        game.tick_lan(false);
+        host = game.lan.take().unwrap();
+        // That tick has no move of either, so its tick end zeroes the movement
+        // the last tick kept. With the reset ahead of the queued move the flag
+        // stayed set, and this tick kept the stale move instead of zeroing it.
+        host.hub.guests.update(0, |g| {
+            g.inbox.push_back(crate::lan::guest::InboxItem::Packet(
+                play::Serverbound::ClientTickEnd(horizon_protocol::packets::Empty),
+                None,
+            ));
+        });
+        game.lan = Some(host);
+        game.tick_lan_packets();
+        host = game.lan.take().unwrap();
+        assert_eq!(
+            host.hub.guests[0].known_movement,
+            [0.0; 3],
+            "a client tick with no move of either has none"
+        );
         game.lan = Some(host);
     }
 }
