@@ -918,7 +918,7 @@ impl GameLevel<'_> {
                 if !m.items.is_empty()
                     && self.world.block_entities.mod_container(old.0).is_some()
                     && !mod_api::__private::parts_installation::block_container_keeps_contents(
-                        &name,
+                        &self.facts.get(old).name,
                     ) =>
             {
                 PreRemove::Contents {
