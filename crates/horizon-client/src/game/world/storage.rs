@@ -3,7 +3,7 @@
 //! player's `PlayerEnderChestContainer`, saved as `EnderItems`).
 use super::Game;
 use horizon_client::{
-    containers::{BlockEntity, ChestHalf},
+    containers::{BlockEntity, ChestHalf, block_entity_type, is_shulker_box_block},
     items::ItemStack,
     text::Text,
 };
@@ -34,7 +34,27 @@ fn spectator_container(behaviours: &Behaviours, state: BlockStateId) -> bool {
     .into_iter()
     .any(|class| data.is(class))
 }
-
+/// The custom statistic a container block's `useWithoutItem` awards when it
+/// opens: `ChestBlock.getOpenChestStat` is `Stats.OPEN_CHEST` for every chest
+/// block (`CopperChestBlock` extends `ChestBlock` and does not override it),
+/// with `TrappedChestBlock`'s `TRIGGER_TRAPPED_CHEST` the only override;
+/// `BarrelBlock` awards `OPEN_BARREL`, `ShulkerBoxBlock` `OPEN_SHULKER_BOX`,
+/// and a hopper, dropper or dispenser `INSPECT_HOPPER`/`_DROPPER`/`_DISPENSER`.
+/// The ender chest's `OPEN_ENDERCHEST` comes from its own path. The chest and
+/// shulker answers ask the block entity type, so a content block of a chest's
+/// or a shulker box's template counts as one (`block_entity_type`), not its id.
+pub(super) fn open_stat(name: &str) -> Option<&'static str> {
+    match name {
+        "minecraft:trapped_chest" => Some("trigger_trapped_chest"),
+        "minecraft:barrel" => Some("open_barrel"),
+        "minecraft:hopper" => Some("inspect_hopper"),
+        "minecraft:dropper" => Some("inspect_dropper"),
+        "minecraft:dispenser" => Some("inspect_dispenser"),
+        n if block_entity_type(n) == Some("minecraft:chest") => Some("open_chest"),
+        n if is_shulker_box_block(n) => Some("open_shulker_box"),
+        _ => None,
+    }
+}
 impl Game<'_> {
     /// `ServerPlayerGameMode.useItemOn` for a spectator: the block's menu
     /// (`BlockState.getMenuProvider`) opens, and nothing else happens. The
@@ -913,3 +933,7 @@ mod lock_tests {
         assert!(game.titles.overlay.is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "tests/container_open_stat_tests.rs"]
+mod container_open_stat_tests;
