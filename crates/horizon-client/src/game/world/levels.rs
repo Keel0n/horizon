@@ -636,7 +636,7 @@ impl Levels {
         self.parked.values().map(|level| &level.streaming)
     }
 
-/// Abort every parked level's generation, as a crash stop does for the
+    /// Abort every parked level's generation, as a crash stop does for the
     /// level in place (`Streaming::abort_generation_for_a_crash`).
     pub(super) fn abort_parked_generation_for_a_crash(&mut self) {
         for level in self.parked.values_mut() {

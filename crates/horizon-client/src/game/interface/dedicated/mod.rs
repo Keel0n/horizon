@@ -1769,7 +1769,7 @@ impl Game<'_> {
         if self.is_dedicated_server() {
             if self.level.spawn.is_none() {
                 let [x, y, z] = loop {
-if self.stopped_by_a_crash() {
+                    if self.stopped_by_a_crash() {
                         return Err("a worker panicked while the world was loading".into());
                     }
                     self.update_world();
@@ -2889,7 +2889,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-/// An emergency save waits for the server's run to save and give up on the
+    /// An emergency save waits for the server's run to save and give up on the
     /// timeout; on the server thread itself it returns at once, as the tick
     /// loop's own handler saves there. Mirrors `world/integrated.rs`'s
     /// `emergency_save_waits_for_finished_and_times_out`.

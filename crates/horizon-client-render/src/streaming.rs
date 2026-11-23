@@ -2274,7 +2274,7 @@ impl Streaming {
         }
         if self.decorates && self.decorating < workers * 2 && !self.protos.is_empty() {
             // A wanted chunk holds back higher-ranked ones only if it can be
-// decorated: its 3x3 neighbourhood is (or will be) generated as
+            // decorated: its 3x3 neighbourhood is (or will be) generated as
             // protos, none of them already final. A failed neighbour is none
             // of those: still requested, it is not retried until the sweep
             // drops its mark, so it can never come — counting it as
@@ -2915,7 +2915,7 @@ impl Streaming {
     pub fn set_forced_loaded(&mut self, world: &mut World, x: i32, z: i32, forced: bool) -> bool {
         let changed = self.set_forced(x, z, forced);
         if forced && changed {
-while !world.chunks.contains_key(&(x, z)) {
+            while !world.chunks.contains_key(&(x, z)) {
                 assert!(!self.paused, "forced chunk load before streaming started");
                 assert!(
                     !self
