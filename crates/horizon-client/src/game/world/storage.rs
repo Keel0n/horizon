@@ -272,11 +272,9 @@ fn facing_step(facing: &str) -> (i32, i32) {
 
 /// Java's `state.getBlock() instanceof ShulkerBoxBlock`, for this client's
 /// tables: the block's class, which a content block answers with its template's.
-/// The client's own door to that answer. Its name and place are kept because the
-/// mod point `horizon_client::game::storage::is_shulker_box` and its entry in the
-/// generated `internals.json` may not disappear (`docs/layers.md#mod-points-stay-put`,
-/// `tools/check_mod_points_unchanged.py`); the arguments the class answer needs
-/// changed that point, and `tools/mod_points_removed.txt` lists it.
+/// The client's own door to that answer. Its name and place are kept as an
+/// `internals.json` entry the class answer changed and
+/// `tools/check_mod_api_unchanged.py --allow-added` accepts.
 pub(super) fn is_shulker_box(behaviours: &Behaviours, state: BlockStateId) -> bool {
     behaviours.is_shulker_box(state)
 }
