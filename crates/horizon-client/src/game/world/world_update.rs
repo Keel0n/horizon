@@ -392,6 +392,15 @@ impl Game<'_> {
             renderer.set_terrain_loading(
                 arriving || (meshing && self.view_arrival.recent(now)) || sampling,
             );
+            // The smaller view a render distance drop asked for has settled:
+            // give the peak's memory back once more, now the freed sections
+            // and meshes have left every thread's heap (#19332).
+            if self.release_when_settled && !arriving && !meshing && !sampling {
+                self.release_when_settled = false;
+                self.streaming.shrink_to_fit();
+                self.pending_uploads.shrink_to_fit();
+                horizon_threads::release_everywhere();
+            }
             if let (Some(lod), Some(player)) = (&mut self.lod, &self.player) {
                 let lod_distance = far_distance.min(horizon_client::lod::MAX_CHUNKS);
                 lod.set_near_loading(self.streaming.terrain_loading());

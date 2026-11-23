@@ -159,7 +159,8 @@ impl Game<'_> {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
-        let render_distance_changed = self.streaming.radius != self.settings.render_distance;
+        let old_radius = self.streaming.radius;
+        let render_distance_changed = old_radius != self.settings.render_distance;
         self.streaming.radius = self.settings.render_distance;
         // Options.renderDistance, biomeBlendRadius, ambientOcclusion,
         // cutoutLeaves, Opaque Ice and the leaf-culling mode:
@@ -187,6 +188,13 @@ impl Game<'_> {
         self.streaming.leaf_culling = leaf_culling;
         if reload {
             self.all_sections_changed();
+        }
+        // A render distance that went down frees the peak view's sections and
+        // meshes: ask every thread's heap to give the memory back now, and
+        // again once the smaller view has settled (`update_world`, #19332).
+        if render_distance_changed && self.settings.render_distance < old_radius {
+            self.release_when_settled = true;
+            horizon_threads::release_everywhere();
         }
         self.audio.master = self.settings.master_volume;
         if self.settings.sound_device != self.audio.device() {

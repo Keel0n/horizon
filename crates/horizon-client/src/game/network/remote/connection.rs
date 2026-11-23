@@ -715,6 +715,15 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// The window's streaming keeps the world's generator alive (and through
+    /// it the shared worldgen bundle) after a close. Replace it with the empty
+    /// generator a disconnected client keeps, so the bundle's last reference
+    /// goes and the streaming source leaves the worker pool (#19332).
+    pub(in crate::game) fn forget_streaming_terrain(&mut self) {
+        self.streaming = Streaming::new(Arc::new(NoTerrain), self.worker_context(), 1);
+        self.streaming.paused = true;
+    }
+
     /// Disconnect and return to the multiplayer screen (DisconnectedScreen), whose Back
     /// leads to the title after a single player world.
     pub(super) fn leave_server_body(&mut self, reason: Option<Text>) -> Result<()> {
@@ -855,6 +864,9 @@ impl Game<'_> {
         if transferring {
             return Ok(());
         }
+        // Back at the menu: the world's peak memory goes to the OS, and the
+        // bundle and loot tables a fresh title does not hold go too (#19332).
+        self.release_world_memory();
         let saves = std::env::current_dir()?.join("saves");
         let mut title = self
             .new_title(saves.clone())

@@ -976,6 +976,9 @@ struct Game<'a> {
     /// server, as the last `update_world` saw them (`ViewArrival::arriving`):
     /// `Streaming` cannot see columns the server has not sent yet.
     view_arriving: bool,
+    /// A render distance went down: once the view settles (`update_world`),
+    /// ask every thread's heap to give back the memory the peak held (#19332).
+    release_when_settled: bool,
     options: Options,
     player: Option<PlayerMotion>,
     spawn: Option<Vec3>,
@@ -6501,6 +6504,19 @@ impl Game<'_> {
         self.native_world_opened(dim);
         self.open_saved_portal_levels()
     }
+    /// The world is gone and the menu is back: give the memory its peak held
+    /// to the OS. The worldgen bundle and the loot tables go (a fresh title
+    /// holds neither; the next world's preload reads them again), the light
+    /// scratch pool with them, and every thread's heap collects — this one
+    /// now, the pool threads within `RELEASE_POLL` (#19332).
+    pub(super) fn release_world_memory(&mut self) {
+        self.release_when_settled = false;
+        horizon_client::vanillagen::forget_shared_data();
+        horizon_client::structure_blocks::forget_loot_data();
+        world_loading::world_data_released();
+        horizon_client::light::release_scratch();
+        horizon_threads::release_everywhere();
+    }
     fn finish_close_world(&mut self) -> Result<()> {
         self.ambience.clear(&mut self.audio);
         // updateLevelInEngines(null): every sound stops; the music manager
@@ -6527,7 +6543,9 @@ impl Game<'_> {
         self.kept_block_entities.get_mut().clear();
         self.mod_view_distances.take();
         self.bosses = Default::default();
-        self.streaming.paused = true;
+        // The window's streaming keeps the world's generator (and the shared
+        // worldgen bundle) alive; the empty generator lets them go (#19332).
+        self.forget_streaming_terrain();
         self.world = Game::world_for_mods(self.res.facts().air, 0);
         self.player = None;
         // `LocalPlayer`'s constructor: `KeyMapping.resetToggleKeys`, so a sneak or sprint toggled
@@ -6554,6 +6572,7 @@ impl Game<'_> {
         title.skip_multiplayer_warning = self.settings.file.bool("skipMultiplayerWarning");
         self.show_title(title);
         self.capture(false);
+        self.release_world_memory();
         Ok(())
     }
     /// Let go of every entity of the level (saved first): the next world
@@ -10692,6 +10711,7 @@ impl<'a> Game<'a> {
             lod_covered_at: None,
             view_arrival: Default::default(),
             view_arriving: false,
+            release_when_settled: false,
             options,
             player: None,
             spawn: None,

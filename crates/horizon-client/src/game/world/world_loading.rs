@@ -583,6 +583,18 @@ pub(super) fn world_data_used() {
     *PRELOAD.lock().unwrap_or_else(|e| e.into_inner()) = Preload::Used;
 }
 
+/// A world closed back to the title: the bundle and loot tables were let go
+/// (`Game::release_world_memory`), so the preload is idle again and the title
+/// behaves as a fresh one — the world screens start a new preload, and a
+/// world opened meanwhile reads what it needs (#19332). A preload still
+/// reading (a world never opened) is left alone.
+pub(super) fn world_data_released() {
+    let mut preload = PRELOAD.lock().unwrap_or_else(|e| e.into_inner());
+    if matches!(*preload, Preload::Used) {
+        *preload = Preload::Idle;
+    }
+}
+
 /// A server's world opens: the loot tables its first placed block or broken
 /// container needs (`loot_data`) are read on a helper thread while the
 /// connection is made, so the game thread never waits on them (~0.6 s on a
@@ -1414,6 +1426,25 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// Closing a world back to the title makes the preload idle again, so the
+    /// title behaves as a fresh one and the world screens may start a new
+    /// preload (#19332). A preload still reading (no world opened) is left
+    /// alone, and an already-idle preload stays idle.
+    #[test]
+    fn closing_a_world_makes_the_preload_idle_again() {
+        world_data_used();
+        world_data_released();
+        assert!(
+            matches!(*PRELOAD.lock().unwrap_or_else(|e| e.into_inner()), Preload::Idle),
+            "a released world's preload is idle again"
+        );
+        world_data_released();
+        assert!(
+            matches!(*PRELOAD.lock().unwrap_or_else(|e| e.into_inner()), Preload::Idle),
+            "releasing an idle preload keeps it idle"
+        );
     }
 
     #[test]
