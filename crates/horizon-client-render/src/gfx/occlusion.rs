@@ -856,6 +856,16 @@ impl Occlusion {
         self.changed.clear();
         self.changed_late.clear();
     }
+    /// Gives back the capacity the columns map and lists grew to but no
+    /// longer use (`Renderer::clear_sections` after a render distance went
+    /// down or a world closed, #19332).
+    pub fn shrink_to_fit(&mut self) {
+        self.columns.map.shrink_to_fit();
+        self.edits.shrink_to_fit();
+        self.changed.shrink_to_fit();
+        self.changed_late.shrink_to_fit();
+        self.vis.shrink_to_fit();
+    }
     /// Whether `key` is visible from the camera. Without a usable graph
     /// (before the first search lands, or with the camera somewhere the graph
     /// never reached) every section is.

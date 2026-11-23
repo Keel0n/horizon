@@ -64,6 +64,21 @@ impl PageRuns {
         self.max_page = 0;
     }
 
+    /// Empties the lists and gives back the capacity a larger view grew them
+    /// to (`Renderer::clear_sections`); the next frame refills them.
+    pub fn shrink_to_fit(&mut self) {
+        self.clear();
+        self.runs.shrink_to_fit();
+        self.sorted_runs.clear();
+        self.sorted_runs.shrink_to_fit();
+        self.counts.clear();
+        self.counts.shrink_to_fit();
+        self.scratch_draws.clear();
+        self.scratch_draws.shrink_to_fit();
+        self.scratch_pages.clear();
+        self.scratch_pages.shrink_to_fit();
+    }
+
     #[inline(always)]
     fn band_of(&mut self, distance: u64) -> u64 {
         if distance >= self.band_lo_bits && distance < self.band_hi_bits {

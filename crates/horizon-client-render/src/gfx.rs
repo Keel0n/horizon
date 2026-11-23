@@ -6327,12 +6327,44 @@ impl Renderer {
         self.block_entity_membership_revisions.clear();
         self.block_entity_marks.borrow_mut().sections.clear();
         self.section_uploaded.clear();
+        // A render distance that went down (or a world closed) leaves these
+        // maps holding the peak's capacity; give it back now, the reload
+        // refills them at the new size (#19332).
+        self.block_entities.shrink_to_fit();
+        self.block_entity_section_revisions.shrink_to_fit();
+        self.block_entity_membership_revisions.shrink_to_fit();
+        self.section_uploaded.shrink_to_fit();
+        // Per-frame scratch keeps the peak view's room between frames; the
+        // next frame refills it at the new size.
+        self.visible.clear();
+        self.visible.shrink_to_fit();
+        self.visible_lods.clear();
+        self.visible_lods.shrink_to_fit();
+        self.shadow_visible.clear();
+        self.shadow_visible.shrink_to_fit();
+        self.translucent_draws.clear();
+        self.translucent_draws.shrink_to_fit();
+        self.origins.clear();
+        self.origins.shrink_to_fit();
+        self.draws.clear();
+        self.draws.shrink_to_fit();
+        self.draw_pages.clear();
+        self.draw_pages.shrink_to_fit();
+        self.phase2_draws.clear();
+        self.phase2_draws.shrink_to_fit();
+        self.phase2_pages.clear();
+        self.phase2_pages.shrink_to_fit();
+        self.solid_runs.shrink_to_fit();
+        self.phase2_runs.shrink_to_fit();
+        self.shadow_runs.shrink_to_fit();
         self.newest_upload = None;
         self.newest_lod_fade = None;
         self.block_entity_revision = next_block_entity_revision();
         self.light_blocks.clear();
+        self.light_blocks.shrink_to_fit();
         self.light_revision += 1;
         self.sections.clear();
+        self.sections.shrink_to_fit();
         self.ray_clear();
         self.lods.clear();
         self.lod_cutout.clear();
@@ -6341,6 +6373,7 @@ impl Renderer {
         self.lod_pending = None;
         self.lod_tracker.clear();
         self.detail_columns.clear();
+        self.detail_columns.shrink_to_fit();
         self.detail_revision += 1;
         self.upload_retries.clear();
         // A dimension change drops every page at once: freed later, off this thread.
@@ -6366,6 +6399,7 @@ impl Renderer {
         self.translucency_cursor = 0;
         if layout == self.layout {
             self.occlusion.clear();
+            self.occlusion.shrink_to_fit();
         } else {
             self.layout = layout;
             self.occlusion = occlusion::Occlusion::new(layout.min_y(), layout.sections() as i32);

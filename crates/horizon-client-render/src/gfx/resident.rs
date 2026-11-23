@@ -183,6 +183,25 @@ impl<T> Resident<T> {
         self.columns.clear();
         self.column_index.clear();
     }
+    /// Gives back the capacity the lists and maps grew to but no longer use
+    /// (`clear_sections`): a render distance that went down leaves the store
+    /// holding the peak's room otherwise, counted by `heap_bytes`.
+    pub fn shrink_to_fit(&mut self) {
+        self.items.shrink_to_fit();
+        self.bounds.shrink_to_fit();
+        self.marked.shrink_to_fit();
+        self.slots.shrink_to_fit();
+        self.column_headers.shrink_to_fit();
+        self.column_marked_bits.shrink_to_fit();
+        self.columns.shrink_to_fit();
+        for column in &mut self.columns {
+            column.sections.shrink_to_fit();
+            column.section_bounds.shrink_to_fit();
+            column.marked.shrink_to_fit();
+            column.marked_bounds.shrink_to_fit();
+        }
+        self.column_index.shrink_to_fit();
+    }
     #[inline(always)]
     fn column_has_marked(&self, ci: usize) -> bool {
         (self.column_marked_bits[ci >> 6] >> (ci & 63)) & 1 != 0
@@ -990,6 +1009,34 @@ mod tests {
         assert_ne!(two, one);
         r.clear();
         assert_ne!(r.removals(), two);
+    }
+
+    /// A render distance that went down clears the store: `clear` alone keeps
+    /// the peak's capacity (`heap_bytes` counts it), `shrink_to_fit` gives it
+    /// back, and the store still works afterwards.
+    #[test]
+    fn clear_and_shrink_gives_back_the_peak_capacity() {
+        let mut r = Resident::default();
+        for x in -40i32..=40 {
+            for z in -40i32..=40 {
+                for y in 0..8 {
+                    r.insert_marked((x, y, z), [x, y, z], None, y % 2 == 0);
+                }
+            }
+        }
+        let peak = r.heap_bytes();
+        assert!(peak > 1 << 20, "a grown store holds real capacity: {peak}");
+        r.clear();
+        let cleared = r.heap_bytes();
+        assert!(cleared > 0, "clear alone keeps the lists' capacity");
+        r.shrink_to_fit();
+        assert_eq!(
+            r.heap_bytes(),
+            Resident::<[i32; 3]>::default().heap_bytes(),
+            "an emptied, shrunk store holds no more than a fresh one"
+        );
+        r.insert((3, 4, 5), [3, 4, 5]);
+        assert_eq!(r.find((3, 4, 5)), Some(&[3, 4, 5]));
     }
 
     #[test]
