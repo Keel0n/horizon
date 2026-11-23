@@ -302,6 +302,8 @@ impl Game<'_> {
             guest: self.lan_acting,
             random: horizon_client::projectiles::unique_random(start),
             deflected_by: None,
+            first_tick: true,
+            canceled_impact_inside: false,
             last_state: None,
         });
         self.player_projectile_shot();
@@ -505,8 +507,6 @@ impl Game<'_> {
             let mut t = self.tridents.remove(i);
             t.previous = t.position;
             t.age += 1;
-            // AbstractArrow.tick: `if (shakeTime > 0) --shakeTime;`.
-            t.shake -= i32::from(t.shake > 0);
             if t.in_ground_time > 4 {
                 t.dealt_damage = true;
             }
@@ -553,6 +553,15 @@ impl Game<'_> {
                 }
                 t.returning += 1;
             }
+            // AbstractArrow.tick opens here: with physics on, a position inside
+            // the block's collision shape stops it.
+            let inside = !t.no_physics && {
+                let rain = self.arrow_rain();
+                self.arrow_scene(&rain).inside_collision(t.position)
+            };
+            t.settle_inside_block(inside);
+            // AbstractArrow.tick: `if (shakeTime > 0) --shakeTime;`.
+            t.shake -= i32::from(t.shake > 0);
             // AbstractArrow clears cached water/rain before its stuck branch.
             let in_rain = {
                 let rain = self.arrow_rain();
@@ -639,12 +648,19 @@ impl Game<'_> {
                         }
                     }
                 }
-                // Boats, minecarts and primed TNT are pickable too (`isPickable`).
+                // Boats, minecarts, primed TNT and armor stands that are not
+                // markers are pickable too (`isPickable`).
                 if !t.dealt_damage {
                     for (who, b) in self
                         .vehicle_targets()
                         .into_iter()
                         .chain(self.tnts.iter().map(|t| (Who::Mob(t.id), t.bounds())))
+                        .chain(
+                            self.armor_stands
+                                .iter()
+                                .filter(|a| !a.marker)
+                                .map(|a| (Who::Mob(a.id), a.bounds())),
+                        )
                     {
                         if let Who::Mob(id) = who
                             && let Some(d) = segment_box(t.position, t.velocity, b.inflate(grow))
@@ -819,6 +835,10 @@ impl Game<'_> {
                                 let hit = CartHit::attributed(Some(by));
                                 self.hurt_cart(i, damage, creative, false, hit);
                             }
+                        } else if self.armor_stands.iter().any(|a| a.id == id) {
+                            // ArmorStand.hurtServer: `trident` always kills a stand.
+                            let by = t.guest.map_or(Target::Player, Target::Guest);
+                            self.command_damage_stand(id, "minecraft:trident", Some(by));
                         } else {
                             // ItemFrame.hurtServer: the item comes out, or the frame breaks.
                             self.projectile_hurts_frame(id, true, creative);
@@ -893,6 +913,7 @@ impl Game<'_> {
                     let clip = clip.map(|(at, block, face)| (back_off(at, flight), block, face));
                     if canceled_block && let Some((stop, _, _)) = clip {
                         t.position = stop;
+                        t.canceled_impact_inside = true;
                     } else if let Some((stop, block, _)) = clip {
                         // Projectile.onHit on a block: PROJECTILE_LAND at the
                         // block's centre.
@@ -948,6 +969,7 @@ impl Game<'_> {
             // The stuck branch returns before Entity.baseTick. A flight that
             // just hit a block still reaches it, as does a noPhysics return.
             if !stuck_tick {
+                t.first_tick = false;
                 t.has_been_shot = true;
                 let rain = self.arrow_rain();
                 t.was_touching_water = self.arrow_scene(&rain).in_water(t.position);

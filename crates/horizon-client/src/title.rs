@@ -531,6 +531,7 @@ pub(crate) struct Button {
     label: String,
     enabled: bool,
     id: u8,
+    agent_id: Option<&'static str>,
     icon: Option<(&'static str, f32)>,
     /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text
     /// centred in the room left of it.
@@ -539,6 +540,11 @@ pub(crate) struct Button {
     action: Option<crate::widgets::Action>,
 }
 impl Button {
+    fn identified(mut self, id: &'static str) -> Self {
+        self.agent_id = Some(id);
+        self
+    }
+
     fn does(mut self, action: crate::widgets::Action) -> Self {
         self.action = Some(action);
         self
@@ -635,7 +641,9 @@ fn read_world(path: &Path, folder: String) -> Option<WorldEntry> {
     };
     let data = root.get("Data")?;
     let modified = match data.get("LastPlayed") {
-        Some(horizon_core::nbt::Tag::Long(millis)) if *millis >= 0 => {
+        // Past the year 9999 it can't be a time an edited or corrupt level.dat meant, and a huge
+        // value overflows `SystemTime` on Windows: the file's time stands in, as for a negative one.
+        Some(horizon_core::nbt::Tag::Long(millis @ 0..=253_402_300_799_999)) => {
             std::time::UNIX_EPOCH + std::time::Duration::from_millis(*millis as u64)
         }
         _ => modified,

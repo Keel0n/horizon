@@ -32,11 +32,11 @@ fn set_key(tag: &mut Tag, key: &str, value: Tag) {
 /// `SummonCommand.spawnEntity`'s name for a kind no command target stands for:
 /// its entity type's. An item is the exception: `EntityType`'s factory leaves
 /// `ItemStack.EMPTY`, which `ItemEntity.readAdditionalSaveData` discards, and
-/// `ItemEntity.getName` reads that empty stack's `getItemName` — an empty
-/// component, not the type's name.
+/// `ItemEntity.getName` reads that empty stack's item name, which is the
+/// air item's: "Air" (`block.minecraft.air`), not the type's name.
 pub(super) fn summon_type_name(kind: &str) -> Text {
     if kind.trim_start_matches("minecraft:") == "item" {
-        return Text::empty();
+        return Text::translate("block.minecraft.air", &[]);
     }
     Text::translate(&super::entity_name_key(kind), &[])
 }
@@ -179,7 +179,9 @@ impl Game<'_> {
             Target::Stand(id) => {
                 let uuid = self.uuid_for(id);
                 let a = self.armor_stands.iter().find(|a| a.id == id)?;
-                entity_nbt::armor_stand_to_nbt(a, uuid, self.persist.raw.get(&id))
+                let mut tag = entity_nbt::armor_stand_to_nbt(a, uuid, self.persist.raw.get(&id));
+                self.save_portal_cooldown(id, &mut tag);
+                tag
             }
             Target::Frame(id) => {
                 let uuid = self.uuid_for(id);
@@ -243,11 +245,13 @@ impl Game<'_> {
                         _ => None,
                     });
                 let target = who.and_then(|who| self.save_who_uuid(who));
-                let p = self.creatures.projectiles.iter().find(|p| p.id == id)?;
+                let index = self.creatures.projectiles.iter().position(|p| p.id == id)?;
+                let mob_owner = self.projectile_owner_uuid(index);
+                let p = &self.creatures.projectiles[index];
                 let owner = if p.owner == Some(horizon_client::mobs::Who::Player) {
                     player_uuid
                 } else {
-                    None
+                    mob_owner
                 };
                 let in_block = p
                     .arrow
@@ -319,6 +323,11 @@ impl Game<'_> {
                 let uuid = self.uuid_for(id);
                 let c = self.breath_clouds.iter().find(|c| c.id == id)?;
                 let [x, y, z] = c.at;
+                let [yaw, pitch] = self
+                    .persist
+                    .raw
+                    .get(&id)
+                    .map_or([0.0; 2], horizon_client::entity_nbt::loaded_rotation);
                 // Read the live cloud, including its current radius and age;
                 // the raw compound alone does not contain generated clouds.
                 let mut tag = self.other_to_nbt(
@@ -332,8 +341,8 @@ impl Game<'_> {
                         knot_check: None,
                         eye: None,
                         position: horizon_core::geometry::Vec3::new(x, y, z),
-                        yaw: 0.0,
-                        pitch: 0.0,
+                        yaw,
+                        pitch,
                     },
                     uuid,
                 );
@@ -686,7 +695,7 @@ impl Game<'_> {
                     falling.position = position;
                     falling.previous = position;
                     falling.velocity = velocity;
-                    falling.rotation = entity_nbt::rotation(&tag);
+                    falling.rotation = entity_nbt::loaded_rotation(&tag);
                     falling.age = age;
                     falling.no_gravity = no_gravity;
                     falling.drop_item = drop_item;
@@ -744,7 +753,7 @@ impl Game<'_> {
                     .find(|o| o.id == id)
                     .ok_or_else(stale)?;
                 orb.rotation = new.rotation;
-                orb.position = new.position;
+                orb.set_position(new.position);
                 orb.previous = new.previous;
                 orb.velocity = new.velocity;
                 orb.value = new.value;
@@ -874,6 +883,14 @@ impl Game<'_> {
         | Target::Fangs(id)
         | Target::Projectile(id) = t
         {
+            // Entity.load: only the kinds whose data reads overlay the live
+            // counter, so an unrelated merge writes back what it just read.
+            if matches!(
+                t,
+                Target::Item(_) | Target::Stand(_) | Target::Boat(_) | Target::Cart(_)
+            ) {
+                self.restore_portal_cooldown(id, &tag);
+            }
             self.persist.raw.insert(id, tag);
         }
         Ok(())
