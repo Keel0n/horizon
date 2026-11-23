@@ -222,8 +222,7 @@ impl PotionIngredient {
         // for tags, `Item.CODEC` for items): a bare id or `#tag` names `minecraft`'s.
         let add = |s: &str, set: &mut HashSet<String>| match s.strip_prefix('#') {
             Some(tag) => {
-                let canonical = parse_or_keep(tag);
-                set.extend(items.item_tags.get(&canonical).into_iter().flatten().cloned());
+                set.extend(items.item_tags.get(&parse_or_keep(tag)).into_iter().flatten().cloned());
             }
             None => {
                 set.insert(parse_or_keep(s));
