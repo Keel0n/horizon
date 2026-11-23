@@ -965,8 +965,9 @@ struct ServerState {
 pub(super) struct EmergencyStop {
     /// The server thread, known once `run_dedicated` starts.
     server: OnceLock<std::thread::ThreadId>,
-    /// The crashing thread asked the tick loop to stop.
-    stop: AtomicBool,
+    /// The crashing thread asked the tick loop to stop. Shared with the
+    /// streaming waits so a worker panic interrupts them before teardown.
+    stop: Arc<AtomicBool>,
     /// The run ended, its last save included: what the hook waits for.
     finished: AtomicBool,
 }
@@ -1162,6 +1163,11 @@ impl Game<'_> {
             .then(super::integrated::take_server_core)
             .flatten();
         self.join_world_rest()?;
+        // Register the emergency signal so streaming waits exit promptly on a
+        // worker panic, before the server teardown reaches abort_generation.
+        if let Some(emergency) = &self.emergency_save {
+            self.streaming.register_emergency(emergency.stop.clone());
+        }
         let Setup {
             props,
             universe,

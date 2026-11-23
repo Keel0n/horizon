@@ -371,6 +371,10 @@ struct Shared {
     /// The crash stop's abort (`abort_generation_for_a_crash`): the save gives
     /// up on the jobs out too, whose worker may be the one that panicked.
     crashed: std::sync::atomic::AtomicBool,
+    /// The panic hook's emergency signal, set before the server teardown
+    /// reaches `abort_generation`. The load and save waits check this so a
+    /// worker panic does not leave them blocked until the server notices.
+    emergency: std::sync::OnceLock<Arc<std::sync::atomic::AtomicBool>>,
 }
 #[derive(Default)]
 struct MeshPool {
@@ -1255,6 +1259,7 @@ impl Streaming {
             meshes: Mutex::new(MeshPool::default()),
             aborted: std::sync::atomic::AtomicBool::new(false),
             crashed: std::sync::atomic::AtomicBool::new(false),
+            emergency: std::sync::OnceLock::new(),
         });
         let light_tables = context.light.clone();
         let saves: Arc<dyn Saves> = generator.clone();
@@ -2711,6 +2716,12 @@ impl Streaming {
     fn near_finished(&self, x: i32, z: i32, reach: i32) -> bool {
         self.ranges().near_finished(x, z, reach)
     }
+    /// Register the panic hook's emergency-stop signal so the load and save
+    /// waits can exit promptly when a worker panics, before the server
+    /// teardown reaches `abort_generation`.
+    pub fn register_emergency(&self, stop: Arc<std::sync::atomic::AtomicBool>) {
+        let _ = self.shared.emergency.set(stop);
+    }
     /// Abort unvisited background chunk generation, decoration, and meshing on world exit.
     pub fn abort_generation(&mut self) {
         self.shared
@@ -2774,8 +2785,14 @@ impl Streaming {
         use std::sync::atomic::Ordering;
         let aborted = self.shared.aborted.load(Ordering::Relaxed);
         let crashed = self.shared.crashed.load(Ordering::Acquire);
-        (!crashed && self.saving > 0)
+        let emergency = self
+            .shared
+            .emergency
+            .get()
+            .is_some_and(|e| e.load(Ordering::Relaxed));
+        (!crashed && !emergency && self.saving > 0)
             || (!aborted
+                && !emergency
                 && (self.decorating > 0 || !self.finishing.is_empty() || !self.viewing.is_empty()))
     }
 
@@ -2791,10 +2808,17 @@ impl Streaming {
             return SaveStep::Protos(self.checkout_protos(written));
         }
         while self.save_waits() {
+            // Only an emergency (crash or panic) bypasses the drain; a normal
+            // shutdown's abort still waits for outstanding saves.
             if self
                 .shared
-                .aborted
+                .crashed
                 .load(std::sync::atomic::Ordering::Relaxed)
+                || self
+                    .shared
+                    .emergency
+                    .get()
+                    .is_some_and(|e| e.load(std::sync::atomic::Ordering::Relaxed))
             {
                 break;
             }
@@ -2931,6 +2955,9 @@ impl Streaming {
                     .shared
                     .aborted
                     .load(std::sync::atomic::Ordering::Relaxed)
+                    || self.shared.emergency.get().is_some_and(|e| {
+                        e.load(std::sync::atomic::Ordering::Relaxed)
+                    })
                 {
                     break;
                 }
@@ -2996,6 +3023,9 @@ impl Streaming {
                 .shared
                 .aborted
                 .load(std::sync::atomic::Ordering::Relaxed)
+                || self.shared.emergency.get().is_some_and(|e| {
+                    e.load(std::sync::atomic::Ordering::Relaxed)
+                })
             {
                 break;
             }
