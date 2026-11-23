@@ -629,15 +629,32 @@ impl Arena {
             .filter(|(i, _)| closing != Some(*i as u32))
             .find_map(|(i, page)| Some((i as u32, page.as_mut()?.free.take(len)?)))
     }
-    /// `alloc_existing` for a mesh moved off the closing page: only pages in
-    /// video memory, so compaction never pushes terrain into system memory.
+    /// `alloc_existing` for a mesh moved off the closing page: video-memory
+    /// pages first, so compaction never pushes terrain into system memory.
+    /// When the closing page is itself in system memory and no video-memory
+    /// page has room (a spilled arena), another system-memory page takes the
+    /// range instead, so this one can empty and go back (#19332).
     pub fn alloc_moved(&mut self, vertices: u64) -> Option<(u32, u64)> {
         let len = Self::span(vertices).min(self.page_limit);
         let closing = self.closing;
-        self.pages
+        let local = self
+            .pages
             .iter_mut()
             .enumerate()
             .filter(|(i, p)| closing != Some(*i as u32) && p.as_ref().is_some_and(|p| !p.host))
+            .find_map(|(i, page)| Some((i as u32, page.as_mut()?.free.take(len)?)));
+        if local.is_some() {
+            return local;
+        }
+        let closing_host = closing
+            .is_some_and(|i| self.pages[i as usize].as_ref().is_some_and(|p| p.host));
+        if !closing_host {
+            return None;
+        }
+        self.pages
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, p)| closing != Some(*i as u32) && p.as_ref().is_some_and(|p| p.host))
             .find_map(|(i, page)| Some((i as u32, page.as_mut()?.free.take(len)?)))
     }
     /// The page to empty when much of the arena is free ranges (video memory
@@ -664,17 +681,26 @@ impl Arena {
         if free * self.stride < min_free || free * 2 < capacity {
             return None;
         }
-        // Moves only go to video-memory pages (`alloc_moved`).
+        // Moves only go to video-memory pages when there is room (`alloc_moved`).
         let local_free: u64 = pages()
             .filter(|(_, p)| !p.host)
+            .map(|(_, p)| p.free_vertices())
+            .sum();
+        let host_free: u64 = pages()
+            .filter(|(_, p)| p.host)
             .map(|(_, p)| p.free_vertices())
             .sum();
         pages()
             .filter_map(|(i, p)| {
                 let used = p.capacity - p.free_vertices();
-                let own = if p.host { 0 } else { p.free_vertices() };
                 // The room elsewhere, less a quarter for first fit's gaps.
-                let elsewhere = (local_free - own) / 4 * 3;
+                // A page in system memory may also empty into others in
+                // system memory (`alloc_moved`): a spilled arena with no
+                // video-memory room still returns its system-memory pages
+                // once the view shrinks (#19332).
+                let room = if p.host { local_free + host_free } else { local_free };
+                let own = p.free_vertices();
+                let elsewhere = (room - own) / 4 * 3;
                 // A page in system memory is emptied first.
                 (used > 0 && used <= elsewhere).then_some((!p.host, used, i as u32))
             })
@@ -2010,6 +2036,42 @@ mod tests {
         // Compaction never moves terrain into a page in system memory.
         assert!(arena.pages[page as usize].as_ref().unwrap().host);
         assert_eq!(arena.alloc_moved(GRAIN), None);
+    }
+
+    /// When video memory is full and the arena spills, a closing host page
+    /// can empty into another host page so compaction still returns system
+    /// memory after the view shrinks (#19332). A closing video-memory page
+    /// still never moves into system memory.
+    #[test]
+    fn host_pages_accept_compacted_ranges_from_another_host_page() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device_with(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS) else {
+            return;
+        };
+        if !device
+            .features()
+            .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+        {
+            return;
+        }
+        let mut arena = Arena::new(&device, 4, GRAIN, false);
+        arena.page_limit = 2 * GRAIN;
+        arena.video_memory_full = true;
+        // Two full pages, both in system memory (video memory is full).
+        let (first, _) = alloc(&mut arena, &device, &queue, 2 * GRAIN).unwrap();
+        let (second, _) = alloc(&mut arena, &device, &queue, 2 * GRAIN).unwrap();
+        assert_ne!(first, second);
+        assert!(arena.pages[first as usize].as_ref().unwrap().host);
+        assert!(arena.pages[second as usize].as_ref().unwrap().host);
+        // The view shrank: each page gives half its ranges back.
+        arena.release(first, 0, GRAIN);
+        arena.release(second, 0, GRAIN);
+        arena.close(first);
+        assert_eq!(
+            arena.alloc_moved(GRAIN),
+            Some((second, 0)),
+            "a closing host page empties into another host page"
+        );
     }
 
     #[test]
