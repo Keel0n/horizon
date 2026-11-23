@@ -187,6 +187,9 @@ struct Reading {
 #[derive(Debug, Default)]
 struct Channel {
     last: Option<Reading>,
+    /// The last source the OS named, kept across "unknown" readings: a failed reading between
+    /// two known ones must not swallow the change between them.
+    last_known: Option<Source>,
     transitions: u32,
     resumes: u32,
 }
@@ -195,11 +198,14 @@ impl Channel {
     /// Folds one reading, and whether the machine slept since the last one, in; returns what
     /// [`sample`] gives from then on.
     fn observe(&mut self, reading: Reading, slept: bool) -> Sample {
-        if announced(self.last, reading, slept) {
+        if announced(self.last, self.last_known, reading, slept) {
             self.transitions = self.transitions.saturating_add(1);
         }
         if slept {
             self.resumes = self.resumes.saturating_add(1);
+        }
+        if reading.source != Source::Unknown {
+            self.last_known = Some(reading.source);
         }
         self.last = Some(reading);
         Sample {
@@ -214,10 +220,11 @@ impl Channel {
 
 /// Whether a reader hears about this tick: the machine slept, the OS's energy saver or its thermal
 /// limit changed, or what powers the machine changed between two sources the OS named. The last
-/// gate is the source's alone: a reading that failed and answered "unknown" in between is not a
-/// state, and the machine coming back to what it was is not a change. The first reading is where
-/// the channel starts, not a change: a game that starts on the battery doesn't announce it as one.
-fn announced(last: Option<Reading>, next: Reading, slept: bool) -> bool {
+/// gate is the source's alone, against the last source the OS named and not the previous tick: a
+/// reading that failed and answered "unknown" in between is not a state, and the machine coming
+/// back to what it was is not a change. The first known reading is where the channel starts, not a
+/// change: a game that starts on the battery doesn't announce it as one.
+fn announced(last: Option<Reading>, last_known: Option<Source>, next: Reading, slept: bool) -> bool {
     if slept {
         return true;
     }
@@ -226,9 +233,8 @@ fn announced(last: Option<Reading>, next: Reading, slept: bool) -> bool {
     };
     last.saver != next.saver
         || last.thermal != next.thermal
-        || (last.source != next.source
-            && last.source != Source::Unknown
-            && next.source != Source::Unknown)
+        || (next.source != Source::Unknown
+            && last_known.is_some_and(|known| known != next.source))
 }
 
 /// Both clocks of one tick. A suspend stops the monotonic clock on Linux and not everywhere, and
@@ -507,6 +513,23 @@ mod tests {
             false,
         );
         assert_eq!(channel.transitions, 3);
+    }
+
+    #[test]
+    fn an_unknown_reading_does_not_swallow_the_source_change() {
+        // A failed reading between the cable coming out and the next good one: the change is
+        // still Ac → Battery, and it is announced once.
+        let mut channel = Channel::default();
+        channel.observe(reading(Source::Ac), false);
+        channel.observe(reading(Source::Unknown), false);
+        channel.observe(reading(Source::Battery), false);
+        assert_eq!(channel.transitions, 1);
+        // Coming back through "unknown" to the same source is a repeat, not a change.
+        let mut returning = Channel::default();
+        returning.observe(reading(Source::Ac), false);
+        returning.observe(reading(Source::Unknown), false);
+        returning.observe(reading(Source::Ac), false);
+        assert_eq!(returning.transitions, 0);
     }
 
     #[test]
