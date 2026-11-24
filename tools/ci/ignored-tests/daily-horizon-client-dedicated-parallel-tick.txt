@@ -1,0 +1,2 @@
+# A dedicated server keeps the Parallel Tick Auto its server.toml asked for (#18473); needs prepared resources.
+horizon-client game::options::parallel_tick_tests::a_dedicated_server_keeps_its_auto_over_the_settings lib daily resources

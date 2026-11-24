@@ -594,7 +594,12 @@ impl Game<'_> {
     }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
     pub(super) fn apply_ui_settings(&mut self) {
-        horizon_client::parallel::set_setting(self.settings.horizon.parallel_tick);
+        // A dedicated server has no window settings: its Parallel Tick is `server.toml`'s
+        // (`HORIZON_PARALLEL_TICK`), and the default Off here would undo its `auto` each time a
+        // level opens.
+        if self.options.dedicated.is_none() {
+            horizon_client::parallel::set_setting(self.settings.horizon.parallel_tick);
+        }
         if horizon_client_render::mipmap::set_dither_cutouts(
             self.settings.horizon.dither_cutout_mips,
         ) {
@@ -1026,6 +1031,32 @@ mod resize_state_tests {
             gui_size: horizon_client::window::GuiSize::new([1280, 960], 100, false).size,
         };
         assert!(!larger_limit.differs_from(&mut last));
+    }
+}
+
+#[cfg(test)]
+mod parallel_tick_tests {
+    /// A dedicated server keeps the Auto its `server.toml` asked for: applying the (window)
+    /// settings, as opening a world or a level does, leaves it, where a client's settings apply.
+    #[test]
+    #[ignore = "daily"]
+    fn a_dedicated_server_keeps_its_auto_over_the_settings() {
+        crate::game::in_own_process(
+            "game::options::parallel_tick_tests::a_dedicated_server_keeps_its_auto_over_the_settings",
+            || {
+                crate::game::native_entity_refs::tests::with_game(|game| {
+                    use horizon_client::graphics::ParallelTickMode;
+                    game.settings.horizon.parallel_tick = ParallelTickMode::Off;
+                    horizon_client::parallel::set_setting(ParallelTickMode::Auto);
+                    game.options.dedicated = Some(Vec::new());
+                    game.apply_ui_settings();
+                    assert_eq!(horizon_client::parallel::status().0, "auto", "the server's Auto");
+                    game.options.dedicated = None;
+                    game.apply_ui_settings();
+                    assert_eq!(horizon_client::parallel::status().0, "off", "a window's setting");
+                });
+            },
+        );
     }
 }
 
