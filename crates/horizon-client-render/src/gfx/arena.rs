@@ -646,8 +646,8 @@ impl Arena {
         if local.is_some() {
             return local;
         }
-        let closing_host = closing
-            .is_some_and(|i| self.pages[i as usize].as_ref().is_some_and(|p| p.host));
+        let closing_host =
+            closing.is_some_and(|i| self.pages[i as usize].as_ref().is_some_and(|p| p.host));
         if !closing_host {
             return None;
         }
@@ -698,7 +698,11 @@ impl Arena {
                 // system memory (`alloc_moved`): a spilled arena with no
                 // video-memory room still returns its system-memory pages
                 // once the view shrinks (#19332).
-                let room = if p.host { local_free + host_free } else { local_free };
+                let room = if p.host {
+                    local_free + host_free
+                } else {
+                    local_free
+                };
                 let own = p.free_vertices();
                 let elsewhere = (room - own) / 4 * 3;
                 // A page in system memory is emptied first.
