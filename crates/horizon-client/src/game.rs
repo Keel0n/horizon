@@ -6560,6 +6560,7 @@ impl Game<'_> {
         self.pitch = pitch;
         self.selected = level.selected_slot.clamp(0, 8) as usize;
         self.streaming = streaming;
+        self.share_emergency(&self.streaming);
         self.world = world;
         self.inventory = inventory;
         self.save = self.with_profession_save_snapshot(save);

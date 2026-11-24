@@ -1150,6 +1150,17 @@ impl Game<'_> {
             .is_some_and(|emergency| emergency.stop_requested())
     }
 
+    /// Hand the emergency signal to a level's streaming once the server makes
+    /// it (the world's at open, each other dimension's as it opens): the
+    /// streaming that `run_dedicated_inner` registers first is the placeholder
+    /// the world replaces, and a forced load or a save waiting on a panicked
+    /// worker must see the stop.
+    pub(super) fn share_emergency(&self, streaming: &horizon_client::streaming::Streaming) {
+        if let Some(emergency) = &self.emergency_save {
+            streaming.register_emergency(emergency.stop.clone());
+        }
+    }
+
     fn run_dedicated_inner(&mut self, startup_began: &mut bool) -> Result<()> {
         // This thread ticks the server (MinecraftServer.spin's priority).
         horizon_threads::favour_current();
@@ -1158,11 +1169,9 @@ impl Game<'_> {
             .then(super::integrated::take_server_core)
             .flatten();
         self.join_world_rest()?;
-        // Register the emergency signal so streaming waits exit promptly on a
-        // worker panic, before the server teardown reaches abort_generation.
-        if let Some(emergency) = &self.emergency_save {
-            self.streaming.register_emergency(emergency.stop.clone());
-        }
+        // The emergency signal reaches each level's streaming as the server
+        // makes it (`share_emergency`), so its waits exit promptly on a
+        // worker panic, before the teardown reaches abort_generation.
         let Setup {
             props,
             universe,

@@ -815,6 +815,7 @@ impl Game<'_> {
             Some(&self.save),
         )?;
         save.install_profession_snapshot(self.stations().professions.clone());
+        self.share_emergency(&streaming);
         if let Some(terrain) = &locator {
             terrain.set_mob_maps(self.mob_map_snapshot());
         }
