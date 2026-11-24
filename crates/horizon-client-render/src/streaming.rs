@@ -4002,9 +4002,8 @@ impl Drop for Streaming {
                 break;
             }
             let left = deadline.saturating_duration_since(now);
-            match self.shared.done.recv_timeout(left.min(CRASH_POLL)) {
-                Some(Done::Saved(_)) => self.saving -= 1,
-                Some(_) | None => {}
+            if let Some(Done::Saved(_)) = self.shared.done.recv_timeout(left.min(CRASH_POLL)) {
+                self.saving -= 1;
             }
         }
         // `jobs` leaves the pool after this, once its running jobs are
