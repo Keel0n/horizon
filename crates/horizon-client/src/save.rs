@@ -330,12 +330,9 @@ pub fn upgrade_older_world_with(
     world: &Path,
     progress: &horizon_world::datafix::progress::UpgradeProgress,
 ) -> Result<()> {
-    let Some(root) = read_dat(&world.join("level.dat")) else {
+    let Some(version) = saved_data_version(world) else {
         return Ok(());
     };
-    let version = root.get("Data").map_or(i64::from(DATA_VERSION), |d| {
-        number(d.get("DataVersion")).unwrap_or(-1) // saves of 1.8 and before have none
-    });
     if version >= i64::from(DATA_VERSION) {
         return Ok(());
     }
@@ -351,6 +348,17 @@ pub fn upgrade_older_world_with(
     horizon_world::datafix::files::upgrade_world_with(world, progress)
         .map_err(|e| format!("upgrading {}: {e}", world.display()))?;
     Ok(())
+}
+/// Whether opening the world needs the data-fixer upgrade path. Saves of 1.8 and before have no
+/// DataVersion, which counts as an upgrade that currently fails with the supported-version error.
+pub fn needs_world_upgrade(world: &Path) -> bool {
+    saved_data_version(world).is_some_and(|version| version < i64::from(DATA_VERSION))
+}
+fn saved_data_version(world: &Path) -> Option<i64> {
+    let root = read_dat(&world.join("level.dat"))?;
+    Some(root.get("Data").map_or(i64::from(DATA_VERSION), |d| {
+        number(d.get("DataVersion")).unwrap_or(-1) // saves of 1.8 and before have none
+    }))
 }
 /// Whether opening the world runs file fixes, which vanilla asks for a backup
 /// first (`BackupStatus.FILE_FIXING_REQUIRED`). Saves of 1.8 and before have no
@@ -2152,6 +2160,41 @@ fn decode_after_sections(
                     chunk.block_entities.push(be);
                 }
                 None => extras.block_entities.push(entry),
+            }
+        }
+    }
+    // A pre-mod save has the vanilla states but no holder records at these positions.
+    // Decode the ordinary saved entities first; only create the missing holders.
+    use crate::block_entity_types::{WATER_CAULDRON, type_for};
+    if let Some(kind) = type_for(WATER_CAULDRON) {
+        let is_cauldron = |id| {
+            registry
+                .state(horizon_world::registry::BlockStateId(id))
+                .is_some_and(|state| state.name == WATER_CAULDRON)
+        };
+        let layout = chunk.layout();
+        for (sy, section) in chunk.sections.iter().enumerate() {
+            if !section.blocks.maybe_has(is_cauldron) {
+                continue;
+            }
+            let mut states = [0; 4096];
+            section.unpack(&mut states);
+            for (n, &state) in (0_i32..).zip(&states) {
+                if !is_cauldron(state) {
+                    continue;
+                }
+                let pos = (
+                    chunk.x * 16 + (n & 15),
+                    layout.min_y() + sy as i32 * 16 + (n >> 8),
+                    chunk.z * 16 + ((n >> 4) & 15),
+                );
+                if !chunk.block_entities.iter().any(|(at, _)| *at == pos) {
+                    use crate::containers::{BlockEntity, ModBlockEntity};
+                    let entity = ModBlockEntity::new(kind.to_owned(), Default::default());
+                    chunk
+                        .block_entities
+                        .push((pos, BlockEntity::Mod(Box::new(entity))));
+                }
             }
         }
     }
