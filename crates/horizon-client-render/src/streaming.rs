@@ -24,6 +24,9 @@ use std::{
 /// How long a worker waits with nothing to do before it gives back its
 /// generator's scratch buffers ([`ChunkGenerator::idle`]).
 pub const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a save's wait for the workers blocks before it looks again for a
+/// crash stop (`Streaming::prepare_save`, `Drop`).
+const CRASH_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Worker CPU time and job counts by kind, for benchmarks
 /// (`examples/gen_light_bench.rs`). Off unless enabled: a relaxed load per
@@ -3060,6 +3063,18 @@ impl Streaming {
     /// Whether a save has to wait for more: the jobs out, unless a crash stop
     /// gave up on them, and the decoration, finishing and light-view work in
     /// flight, unless generation was aborted at all.
+    /// Whether a crash stop (a dead worker, or the panic hook's emergency
+    /// signal) gave up on the work still out.
+    fn crash_stopping(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.shared.crashed.load(Ordering::Relaxed)
+            || self
+                .shared
+                .emergency
+                .get()
+                .is_some_and(|e| e.load(Ordering::Relaxed))
+    }
+
     fn save_waits(&self) -> bool {
         use std::sync::atomic::Ordering;
         let aborted = self.shared.aborted.load(Ordering::Relaxed);
@@ -3089,20 +3104,19 @@ impl Streaming {
         while self.save_waits() {
             // Only an emergency (crash or panic) bypasses the drain; a normal
             // shutdown's abort still waits for outstanding saves.
-            if self
-                .shared
-                .crashed
-                .load(std::sync::atomic::Ordering::Relaxed)
-                || self
-                    .shared
-                    .emergency
-                    .get()
-                    .is_some_and(|e| e.load(std::sync::atomic::Ordering::Relaxed))
-            {
+            if self.crash_stopping() {
                 break;
             }
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match self.shared.done.recv_timeout(left) {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                log::warn!("Horizon: chunk generation did not finish before saving");
+                break;
+            }
+            // A short receive, so a crash or panic that lands while this
+            // waits is seen at the top of the loop instead of after the
+            // whole deadline.
+            let left = deadline.saturating_duration_since(now);
+            match self.shared.done.recv_timeout(left.min(CRASH_POLL)) {
                 Some(Done::Decorated(x, z, region, finals, writes)) => {
                     self.receive_decorated(x, z, *region, finals, writes, world)
                 }
@@ -3116,10 +3130,7 @@ impl Streaming {
                     self.receive_light_view(x, z, proto, view)
                 }
                 Some(other) => self.deferred.push(other),
-                None => {
-                    log::warn!("Horizon: chunk generation did not finish before saving");
-                    break;
-                }
+                None => {}
             }
         }
         let written: Vec<_> = self.written.drain().collect();
@@ -3985,12 +3996,15 @@ impl Drop for Streaming {
         self.abort_generation();
         // Saves in flight hold proto chunks nothing else would save.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while self.saving > 0 {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match self.shared.done.recv_timeout(left) {
+        while self.saving > 0 && !self.crash_stopping() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let left = deadline.saturating_duration_since(now);
+            match self.shared.done.recv_timeout(left.min(CRASH_POLL)) {
                 Some(Done::Saved(_)) => self.saving -= 1,
-                Some(_) => {}
-                None => break,
+                Some(_) | None => {}
             }
         }
         // `jobs` leaves the pool after this, once its running jobs are

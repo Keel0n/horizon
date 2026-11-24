@@ -854,3 +854,67 @@ fn a_crash_stop_does_not_wait_for_a_lost_save_job() {
         started_saving.elapsed()
     );
 }
+
+/// A panic that lands while a save already waits on a slow job ends the wait
+/// then: the emergency save must not sit out the job, or the rest of the
+/// deadline, before it writes the world.
+#[test]
+fn an_emergency_during_a_save_wait_ends_it() {
+    use horizon_client::streaming::ProtoSave;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Saving {
+        started: Arc<AtomicBool>,
+    }
+    impl ChunkGenerator for Saving {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
+            Box::new(())
+        }
+        fn finish(&self, _: Proto) -> Chunk {
+            Chunk::empty(0, 0)
+        }
+        fn save_protos(&self, _: &[&Proto]) {
+            self.started.store(true, Ordering::SeqCst);
+            thread::sleep(Duration::from_secs(5));
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let started = Arc::new(AtomicBool::new(false));
+    let mut streaming = Streaming::new(
+        Arc::new(Saving {
+            started: started.clone(),
+        }),
+        worker_context(&root),
+        2,
+    );
+    let emergency = Arc::new(AtomicBool::new(false));
+    streaming.register_emergency(emergency.clone());
+    let mut world = World::new(BlockStateId(0), 0);
+    streaming.submit_protos(vec![ProtoSave {
+        pos: (0, 0),
+        proto: Box::new(()),
+    }]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !started.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the save job never started");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let signal = {
+        let emergency = emergency.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            emergency.store(true, Ordering::SeqCst);
+        })
+    };
+    let waiting = Instant::now();
+    let _step = streaming.prepare_save(&mut world, true, waiting + Duration::from_secs(20));
+    signal.join().unwrap();
+    assert!(
+        waiting.elapsed() < Duration::from_secs(2),
+        "the save waited {:?} after the emergency signal",
+        waiting.elapsed()
+    );
+}
