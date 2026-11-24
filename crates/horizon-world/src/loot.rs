@@ -415,6 +415,9 @@ pub struct LootEntity {
     pub sheep: Option<(String, bool)>,
     /// A raider: whether it is a captain (wears the ominous banner).
     pub captain: Option<bool>,
+    /// A raider: `Raider.hasRaid`, it belongs to a raid or an active raid is
+    /// within 96 blocks of its block (`ServerLevel.getRaidAt`).
+    pub has_raid: bool,
     /// A frog's variant id (`minecraft:warm`).
     pub frog_variant: Option<String>,
     /// A chicken's variant id (`minecraft:warm`).
@@ -520,6 +523,30 @@ pub fn recipe_result_id(result: &Value) -> Option<String> {
         _ => return None,
     };
     Some(parse_or_keep(id))
+}
+/// `Ingredient.CODEC` (`HolderSetCodec`): each id or `#tag` a smelting recipe's
+/// ingredient names is read through `Identifier.parse` (`TagKey.hashedCodec` for
+/// tags, `Item.CODEC` for items), so a bare one names `minecraft`'s. Canonical
+/// here, at the load boundary, so `furnace_smelt`'s `item_in` matches the
+/// canonical stack id and the tag table's canonical keys. An id `Identifier.parse`
+/// refuses is kept as written, as `recipe_result_id` does.
+fn canonical_ingredient(v: &Value) -> Value {
+    let canonical = |s: &str| match s.strip_prefix('#') {
+        Some(tag) => format!("#{}", parse_or_keep(tag)),
+        None => parse_or_keep(s),
+    };
+    match v {
+        Value::String(s) => Value::String(canonical(s)),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|e| match e {
+                    Value::String(s) => Value::String(canonical(s)),
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 /// `LevelBasedValue.calculate`.
 pub fn level_value(v: &Value, level: i32) -> f32 {
@@ -977,7 +1004,7 @@ impl LootData {
             .filter_map(|r| {
                 let result = recipe_result_id(&r["result"])?.to_owned();
                 let count = r["result"]["count"].as_i64().unwrap_or(1) as i32;
-                Some((r["ingredient"].clone(), result, count))
+                Some((canonical_ingredient(&r["ingredient"]), result, count))
             })
             .collect();
         let binding = holder_sets::Binding::load(root, overlay, &items, &enchantments)?;
@@ -4515,9 +4542,9 @@ impl LootData {
             "minecraft:type_specific/cube_mob" => {
                 e.cube_size.is_some_and(|size| int_bounds(&v["size"], size))
             }
-            // RaiderPredicate: no raid is running here.
+            // RaiderPredicate.matches: both fields default to false.
             "minecraft:type_specific/raider" => e.captain.is_some_and(|captain| {
-                !v["has_raid"].as_bool().unwrap_or(false)
+                e.has_raid == v["has_raid"].as_bool().unwrap_or(false)
                     && captain == v["is_captain"].as_bool().unwrap_or(false)
             }),
             "minecraft:vehicle" => self.entity_matches(v, e.vehicle.as_deref()),
