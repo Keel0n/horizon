@@ -677,8 +677,12 @@ impl Arena {
                 .filter_map(|(i, p)| Some((i, p.as_ref()?)))
         };
         let free: u64 = pages().map(|(_, p)| p.free_vertices()).sum();
-        let capacity: u64 = pages().map(|(_, p)| p.capacity).sum();
-        if free * self.stride < min_free || free * 2 < capacity {
+        // Enough free bytes to be worth a move; the per-page `used <= elsewhere`
+        // test below still leaves a dense arena alone. Not requiring half the
+        // arena free lets a view that just shrank (far terrain turned off, a
+        // render distance dropped) reclaim its oversized pages even while they
+        // are still under half empty (#19332).
+        if free * self.stride < min_free {
             return None;
         }
         // Moves only go to video-memory pages when there is room (`alloc_moved`).
