@@ -1380,6 +1380,11 @@ impl Game<'_> {
             log::info!("Changing view distance to {view}, from {old}");
             host.hub.set_view_distance(view);
             self.settings.render_distance = view;
+            // The server's own view shrank: once it settles, give the peak's
+            // memory back as the window does (`update_world`, #19332).
+            if view < old {
+                self.release_when_settled = true;
+            }
         }
         let simulation = flags.simulation_distance.load(Ordering::Relaxed).max(2);
         let old = host.hub.config.simulation_distance;

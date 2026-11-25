@@ -442,6 +442,14 @@ impl Game<'_> {
                 });
             }
         }
+        // A headless server has no renderer block above: its own view settled
+        // after a render-distance drop (`follow_distances`), so shrink its
+        // streaming maps and collect its heap, as the window does (#19332).
+        if self.release_when_settled && self.renderer.is_none() && !self.streaming.busy() {
+            self.release_when_settled = false;
+            self.streaming.shrink_to_fit();
+            horizon_threads::release_everywhere();
+        }
     }
     /// Run `f` inside a local player block-edit scope so writes record `World::immediate_sections`.
     pub(in crate::game) fn with_player_block_edit<T>(
