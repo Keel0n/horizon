@@ -106,7 +106,12 @@ impl Columns {
             Edit::Set(key, vis) => {
                 self.set(key, vis);
             }
-            Edit::Clear => self.map.clear(),
+            Edit::Clear => {
+                self.map.clear();
+                // The worker's own copy keeps the peak view's capacity otherwise,
+                // as the render-side map did (`Occlusion::shrink_to_fit`, #19332).
+                self.map.shrink_to_fit();
+            }
         }
     }
 }
