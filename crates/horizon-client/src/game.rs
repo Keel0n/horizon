@@ -6511,6 +6511,11 @@ impl Game<'_> {
     /// now, the pool threads within `RELEASE_POLL` (#19332).
     pub(super) fn release_world_memory(&mut self) {
         self.release_when_settled = false;
+        // The End state keeps the Overworld generator for stronghold positions
+        // (`EndState::locator`); it is the last live reference to the worldgen
+        // bundle after the streaming and the server thread let go, so drop it
+        // before forgetting the cache, or the bundle outlives the world (#19332).
+        self.end.set_locator(None);
         horizon_client::vanillagen::forget_shared_data();
         horizon_client::structure_blocks::forget_loot_data();
         world_loading::world_data_released();
