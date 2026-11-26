@@ -330,6 +330,8 @@ struct Heaps {
     threads: Vec<ThreadRow>,
     /// Pages of 8 MiB and up: the address a memory map shows, its bytes, and its owner.
     big: Vec<BigPage>,
+    /// The same for pages no thread's queue holds: freed big pages not yet released.
+    abandoned: Vec<BigPage>,
 }
 
 #[derive(Serialize)]
@@ -365,6 +367,18 @@ fn heaps() -> Heaps {
             .collect(),
         big: report
             .big
+            .iter()
+            .map(|area| BigPage {
+                at: format!("{:#x}", area.at),
+                owner: area.owner.clone(),
+                reserved_mb: mb(area.reserved),
+                committed_mb: mb(area.committed),
+                used_blocks: area.used,
+                block_kb: area.block_size / 1024,
+            })
+            .collect(),
+        abandoned: report
+            .abandoned
             .iter()
             .map(|area| BigPage {
                 at: format!("{:#x}", area.at),

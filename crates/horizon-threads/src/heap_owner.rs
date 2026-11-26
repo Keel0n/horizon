@@ -59,8 +59,11 @@ pub struct ThreadRow {
 pub struct Report {
     /// The threads that recorded themselves, in the order they recorded.
     pub threads: Vec<ThreadRow>,
-    /// Pages of at least [`BIG_AREA`], largest first: one object each.
+    /// Pages of at least [`BIG_AREA`] the live walk found, largest first: one object each.
     pub big: Vec<Area>,
+    /// The same for pages no thread's queue holds (abandoned ones, and singletons, which v3
+    /// tracks on the heap): where a freed-but-not-yet-released big page shows up.
+    pub abandoned: Vec<Area>,
 }
 
 /// The first field of mimalloc's `mi_page_t`: the owning thread's id, with the page flags in
@@ -137,6 +140,15 @@ unsafe extern "C" {
         visitor: mi::mi_block_visit_fun,
         arg: *mut std::ffi::c_void,
     ) -> bool;
+    /// Visit only the pages the heap holds but no thread's queue does: pages whose thread gave
+    /// them up, and singleton pages, which v3 tracks on the heap (they are abandoned at once,
+    /// `page.c:mi_huge_page_alloc`).
+    fn mi_heap_visit_abandoned_blocks(
+        heap: *mut Heap,
+        visit_all_blocks: bool,
+        visitor: mi::mi_block_visit_fun,
+        arg: *mut std::ffi::c_void,
+    ) -> bool;
 }
 
 /// The calling thread's OS id, as mimalloc writes it into its pages.
@@ -203,17 +215,18 @@ pub fn publish_self() {
 /// themselves. The heap walk is the one mimalloc's own statistics print does.
 pub fn report() -> Report {
     let mut walk = HeapWalk::default();
-    // SAFETY: walks this process's default heap under mimalloc's locks; the visitor only
-    // reads the areas it is given. The calling thread holds no other mimalloc locks.
+    let mut abandoned = HeapWalk::default();
+    // SAFETY: walks this process's default heap under mimalloc's locks; the visitors only
+    // read the areas they are given. The calling thread holds no other mimalloc locks.
     unsafe {
-        mi_heap_visit_blocks(
-            mi_heap_main(),
-            false,
-            Some(visit_area),
-            (&raw mut walk).cast(),
-        );
+        let heap = mi_heap_main();
+        mi_heap_visit_blocks(heap, false, Some(visit_area), (&raw mut walk).cast());
+        mi_heap_visit_abandoned_blocks(heap, false, Some(visit_area), (&raw mut abandoned).cast());
     }
     walk.big.sort_by_key(|area| std::cmp::Reverse(area.committed));
+    abandoned
+        .big
+        .sort_by_key(|area| std::cmp::Reverse(area.committed));
     let threads = NAMED
         .lock()
         .map(|named| {
@@ -226,7 +239,11 @@ pub fn report() -> Report {
                 .collect()
         })
         .unwrap_or_default();
-    Report { threads, big: walk.big }
+    Report {
+        threads,
+        big: walk.big,
+        abandoned: abandoned.big,
+    }
 }
 
 #[cfg(feature = "heap-owner")]
