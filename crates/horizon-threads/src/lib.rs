@@ -624,6 +624,9 @@ pub fn heap_tag(name: &'static str) -> Option<heap_census::Tag> {
 /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
 /// don't name it.
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+/// `mi_option_page_commit_on_demand` in mimalloc.h (index 40 in v3): commit a page's memory as its
+/// blocks are touched instead of all of it when the page is made.
+const PAGE_COMMIT_ON_DEMAND: libmimalloc_sys::mi_option_t = 40;
 /// `mi_option_allow_thp` in mimalloc.h (index 43 in v3); unnamed in the bindings too.
 #[cfg(target_os = "linux")]
 const ALLOW_THP: libmimalloc_sys::mi_option_t = 43;
@@ -633,15 +636,25 @@ const ALLOW_THP: libmimalloc_sys::mi_option_t = 43;
 /// quarter more memory than with the system heap; without it a few percent,
 /// and generation keeps most of its speed-up.
 ///
+/// It also commits a page's memory as its blocks are used rather than whole when the page is made.
+/// A page of the larger size classes is up to 512 KiB and a heap that grows by a block or two into
+/// each new class otherwise pays for the whole page: after a render distance cycle (#19332) the
+/// committed memory no thread has touched was 622 MB in the arenas with eager commit and 133 MB
+/// with this, and the process's own committed bytes at the same resident set fell by about 500 MB.
+/// What it costs is a page fault per block first touched; filling the view to render distance 128
+/// took 123 s against 122 s with eager commit on this machine, and a frame's own cost in a world
+/// already loaded is not measured.
+///
 /// On Linux it also turns transparent huge pages off for the process.
 /// mimalloc asks for them on its arenas (`MADV_HUGEPAGE`, so `madvise` systems
 /// give them too), and a 2 MiB huge page stays resident whole while one
 /// 64 KiB mimalloc page in it is used: in a world at render distance 12 the
 /// game held 200 MiB more that way, at the same load time and frame rate.
 pub fn configure_allocator() {
-    // SAFETY: sets one integer option, which mimalloc reads at each purge.
+    // SAFETY: sets integer options, which mimalloc reads at each purge and each new page.
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
+        libmimalloc_sys::mi_option_set(PAGE_COMMIT_ON_DEMAND, 1);
     }
     #[cfg(target_os = "linux")]
     // SAFETY: an integer option mimalloc reads at each new mapping, and a prctl
