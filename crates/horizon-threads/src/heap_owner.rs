@@ -3,16 +3,22 @@
 //! The process memory map shows two kinds of mimalloc region: 1 GiB arenas, and regions of a
 //! few megabytes and up that belong to a single allocation. In mimalloc v3 a request larger
 //! than the largest size class (`MI_LARGE_MAX_OBJ_SIZE`, 64 KiB here) gets a *huge singleton
-//! page* — one block per page, its own OS allocation, committed whole
+//! page* вЂ” one block per page, its own OS allocation, committed whole
 //! (`page.c`: "Huge pages contain just one block, and the segment contains just that page").
 //! A 32 MiB request is therefore a 32 MiB committed region that the map can see and cannot
-//! name. This walk names it: every thread's own heap ("theap" in v3), the bytes it holds, and
-//! each of its pages big enough to be one object — with how much of that page is live, which
-//! is what tells a live-but-untouched buffer from a page the allocator kept after a free.
+//! name. The heap-level walk names it: v3 tracks singleton pages on the heap, not on the
+//! thread's queues (they are "abandoned" at once, `page.c:mi_huge_page_alloc`), so
+//! `mi_heap_visit_blocks` over the default heap вЂ” the locked, supported walk, the one
+//! mimalloc's own statistics print uses вЂ” sees every one of them, and each area carries the
+//! page pointer (`reserved1`), whose first field is the owning thread's id
+//! (`types.h:mi_page_t.xthread_id`, with the page flags in its bottom three bits).
 //!
-//! Measuring only: nothing on a player's path calls [`report`], and the allocator that records
-//! the threads is behind the `heap-owner` feature. In v3 all threads share one `mi_heap`; the
-//! per-thread part is the theap, so the theap is what this walks and what names an owner.
+//! A theap's page queues may not be read from another thread (`mi_theap_visit_blocks` is
+//! deprecated for that reason, and a walk from the control thread is what the first build of
+//! this module crashed on); the heap walk takes locks and is the walk mimalloc itself does.
+//!
+//! Measuring only: nothing on a player's path depends on the numbers, and the allocator that
+//! records the threads is behind the `heap-owner` feature.
 
 use std::cell::Cell;
 use std::sync::Mutex;
@@ -24,7 +30,7 @@ const MB: usize = 1024 * 1024;
 /// A page at least this big is listed on its own: it is one object of that size.
 pub const BIG_AREA: usize = 8 * MB;
 
-/// One page of one size class in one thread's heap.
+/// One page of one size class in the heap.
 #[derive(Clone)]
 pub struct Area {
     /// Where the page's memory starts: the address a memory map shows for it.
@@ -37,95 +43,39 @@ pub struct Area {
     pub used: usize,
     /// The size of one block in it.
     pub block_size: usize,
-    /// The thread whose heap holds it.
+    /// The thread that owns it, or `abandoned` where mimalloc owns it itself.
     pub owner: String,
 }
 
-/// One thread's heap: what it holds.
+/// A thread that recorded itself: its name and the OS id its pages carry.
 pub struct ThreadRow {
-    /// The thread that made it, or `unnamed`.
+    /// The thread's name, or `unnamed`.
     pub thread: String,
-    /// Its theap's address, which is what makes it distinct.
-    pub theap: usize,
-    /// Bytes reserved in it.
-    pub reserved: usize,
-    /// Bytes committed in it.
-    pub committed: usize,
-    /// Bytes of live blocks in it.
-    pub used: usize,
-    /// How many pages it holds.
-    pub pages: usize,
+    /// The OS thread id, as the pages name their owner.
+    pub id: usize,
 }
 
-/// Every thread's heap of this process, and the big pages among them.
+/// What the heap walk saw: the threads that recorded themselves, and the big pages.
 pub struct Report {
-    /// The threads, largest committed first.
+    /// The threads that recorded themselves, in the order they recorded.
     pub threads: Vec<ThreadRow>,
     /// Pages of at least [`BIG_AREA`], largest first: one object each.
     pub big: Vec<Area>,
 }
 
-/// The theap each recording thread made, by address.
-static OWNERS: Mutex<Vec<(usize, &'static str)>> = Mutex::new(Vec::new());
-
-thread_local! {
-    /// Set when the thread has recorded its heap: once per thread is enough.
-    static RECORDED: Cell<bool> = const { Cell::new(false) };
-}
-
-/// mimalloc's `mi_theap_t`, opaque here.
+/// The first field of mimalloc's `mi_page_t`: the owning thread's id, with the page flags in
+/// its bottom three bits (`types.h:382-383`). Read through the area's `reserved1`.
 #[repr(C)]
-struct Theap {
-    _private: [u8; 0],
+struct PageHead {
+    xthread_id: usize,
 }
 
-unsafe extern "C" {
-    /// The calling thread's own heap, created on first use.
-    fn mi_theap_get_default() -> *mut Theap;
-    /// Visit every page of a theap as an area. Deprecated in mimalloc's own header, and still
-    /// the only way to see another thread's pages.
-    fn mi_theap_visit_blocks(
-        theap: *const Theap,
-        visit_blocks: bool,
-        visitor: mi::mi_block_visit_fun,
-        arg: *mut std::ffi::c_void,
-    ) -> bool;
-}
+/// The page flags in the bottom bits of `xthread_id` (`types.h:335-337`).
+const PAGE_FLAG_MASK: usize = 0b111;
 
-/// Record the calling thread's heap and name, on its first allocation.
-///
-/// Only [`OwnerAllocator`] calls this. Reading the thread's name allocates, which lands back
-/// here; `RECORDED` is set first so that call answers immediately instead of recursing.
-pub fn record_heap() {
-    if RECORDED.replace(true) {
-        return;
-    }
-    // SAFETY: reads the calling thread's own heap, creating it if the thread has none. Called
-    // from inside the allocator, so it must not allocate before `RECORDED` is set — it does not.
-    let theap = unsafe { mi_theap_get_default() } as usize;
-    if theap == 0 {
-        return;
-    }
-    let name = std::thread::current()
-        .name()
-        .map(str::to_owned)
-        .unwrap_or_default();
-    let name: &'static str = if name.is_empty() {
-        "unnamed"
-    } else {
-        Box::leak(name.into_boxed_str())
-    };
-    if let Ok(mut owners) = OWNERS.lock() {
-        if !owners.iter().any(|(recorded, _)| *recorded == theap) {
-            owners.push((theap, name));
-        }
-    }
-}
-
-/// What one theap's walk collects: its totals, and the big pages in it.
+/// What the heap walk collects.
 #[derive(Default)]
-struct TheapWalk {
-    row: Option<ThreadRow>,
+struct HeapWalk {
     big: Vec<Area>,
 }
 
@@ -136,78 +86,147 @@ unsafe extern "C" fn visit_area(
     _block_size: usize,
     arg: *mut std::ffi::c_void,
 ) -> bool {
-    // The walk calls this once per page (`block` null), and then — only when asked to visit
-    // blocks, which the report does not — once per live block.
+    // The walk calls this once per page (`block` null), and then вЂ” only when asked to visit
+    // blocks, which this does not вЂ” once per live block.
     if block.is_null() && !area.is_null() {
-        // SAFETY: `area` is a live `mi_heap_area_t` for this call, and the report passes the
-        // `TheapWalk` it is filling in `arg`.
-        let (area, walk) = unsafe { (&*area, &mut *arg.cast::<TheapWalk>()) };
-        if let Some(row) = walk.row.as_mut() {
-            row.reserved = row.reserved.saturating_add(area.reserved);
-            row.committed = row.committed.saturating_add(area.committed);
-            row.used = row.used.saturating_add(area.used);
-            row.pages += 1;
-        }
-        if area.reserved >= BIG_AREA {
-            walk.big.push(Area {
-                at: area.blocks as usize,
-                reserved: area.reserved,
-                committed: area.committed,
-                used: area.used,
-                block_size: area.block_size,
-                owner: walk
-                    .row
+        // SAFETY: `area` is a live `mi_heap_area_t` for this call, and the walk passes the
+        // `HeapWalk` it is filling in `arg`.
+        let (area, walk) = unsafe { (&*area, &mut *arg.cast::<HeapWalk>()) };
+        let owner = if area.reserved >= BIG_AREA {
+            // SAFETY: `reserved1` is the `mi_page_t` of the area being visited; the walk holds
+            // the heap's locks, so the page metadata is stable, and only the first field is read.
+            let id = unsafe {
+                area.reserved1
+                    .cast::<PageHead>()
                     .as_ref()
-                    .map(|row| row.thread.clone())
-                    .unwrap_or_default(),
-            });
-        }
+                    .map_or(0, |page| page.xthread_id & !PAGE_FLAG_MASK)
+            };
+            name_of(id)
+        } else {
+            String::new()
+        };
+        walk.big.push(Area {
+            at: area.blocks as usize,
+            reserved: area.reserved,
+            committed: area.committed,
+            used: area.used,
+            block_size: area.block_size,
+            owner,
+        });
     }
     true
 }
 
-/// Every thread's heap of this process, and the big pages among them.
-///
-/// A thread being allocated from while this runs is read the way mimalloc's own statistics
-/// print reads it (`mi_subproc_heap_stats_print_out` walks the same lists): torn at worst,
-/// never unsafe. The walk does not lock a theap, so run it when the work is quiet.
-pub fn report() -> Report {
-    let owners = OWNERS.lock().map(|o| o.clone()).unwrap_or_default();
-    let mut threads = Vec::with_capacity(owners.len());
-    let mut big = Vec::new();
-    for (theap, name) in &owners {
-        if *theap == 0 {
-            continue;
-        }
-        let mut walk = TheapWalk {
-            row: Some(ThreadRow {
-                thread: (*name).to_owned(),
-                theap: *theap,
-                reserved: 0,
-                committed: 0,
-                used: 0,
-                pages: 0,
-            }),
-            big: Vec::new(),
-        };
-        // SAFETY: walks a theap of this process. The visitor only reads the area it is given
-        // and adds up numbers; nothing is allocated and nothing is freed.
-        unsafe {
-            mi_theap_visit_blocks(
-                (*theap) as *const Theap,
-                false,
-                Some(visit_area),
-                (&raw mut walk).cast(),
-            );
-        }
-        big.append(&mut walk.big);
-        if let Some(row) = walk.row {
-            threads.push(row);
+/// What each thread that recorded itself published: `(name, os thread id)`.
+static NAMED: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
+
+/// mimalloc's `mi_heap_t`, opaque here.
+#[repr(C)]
+struct Heap {
+    _private: [u8; 0],
+}
+
+unsafe extern "C" {
+    /// The main heap, which owns the process's pages. (v3's `mi_heap_get_backing` is gone;
+    /// `mi_heap_main` is its successor in `mimalloc.h:239`.)
+    fn mi_heap_main() -> *mut Heap;
+    /// Visit all areas and blocks in a heap, under the heap's locks.
+    fn mi_heap_visit_blocks(
+        heap: *mut Heap,
+        visit_all_blocks: bool,
+        visitor: mi::mi_block_visit_fun,
+        arg: *mut std::ffi::c_void,
+    ) -> bool;
+}
+
+/// The calling thread's OS id, as mimalloc writes it into its pages.
+#[cfg(windows)]
+fn own_thread_id() -> usize {
+    // SAFETY: returns the calling thread's id, no allocation.
+    unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() as usize }
+}
+
+/// The calling thread's OS id, as mimalloc writes it into its pages: not read here.
+#[cfg(not(windows))]
+fn own_thread_id() -> usize {
+    0
+}
+
+/// A thread's name by its OS id, or the id itself where nothing recorded it. `0` is what
+/// mimalloc writes on a page its thread gave up (abandoned).
+fn name_of(id: usize) -> String {
+    if id == 0 {
+        return "abandoned".to_string();
+    }
+    NAMED
+        .lock()
+        .ok()
+        .and_then(|named| {
+            named
+                .iter()
+                .find(|(_, nid)| *nid == id)
+                .map(|(name, _)| name.clone())
+        })
+        .unwrap_or_else(|| format!("thread {id:#x}"))
+}
+
+/// Record the calling thread's name and OS id, from its 64th allocation on. The mapping is
+/// what turns the heap walk's owner ids into thread names.
+pub fn record_heap() {
+    thread_local! {
+        /// Allocations this thread made; the name waits out the thread's own setup.
+        static ALLOCS: Cell<u32> = const { Cell::new(0) };
+        /// Set once the thread's name is recorded: once per thread is enough.
+        static NAMED_HERE: Cell<bool> = const { Cell::new(false) };
+    }
+    if own_thread_id() == 0 || ALLOCS.replace(64) >= 64 || NAMED_HERE.replace(true) {
+        return;
+    }
+    let name = std::thread::current()
+        .name()
+        .map(str::to_owned)
+        .unwrap_or_else(|| "unnamed".to_string());
+    if let Ok(mut named) = NAMED.lock() {
+        if !named.iter().any(|(_, id)| *id == own_thread_id()) {
+            named.push((name, own_thread_id()));
         }
     }
-    threads.sort_by_key(|row| std::cmp::Reverse(row.committed));
-    big.sort_by_key(|area| std::cmp::Reverse(area.committed));
-    Report { threads, big }
+}
+
+/// Publish the calling thread's name and OS id from outside the allocator (a control command,
+/// a between-jobs worker); the allocator path is [`record_heap`].
+pub fn publish_self() {
+    record_heap();
+}
+
+/// Walk the heap of this process and report the big pages and the threads that recorded
+/// themselves. The heap walk is the one mimalloc's own statistics print does.
+pub fn report() -> Report {
+    let mut walk = HeapWalk::default();
+    // SAFETY: walks this process's default heap under mimalloc's locks; the visitor only
+    // reads the areas it is given. The calling thread holds no other mimalloc locks.
+    unsafe {
+        mi_heap_visit_blocks(
+            mi_heap_main(),
+            false,
+            Some(visit_area),
+            (&raw mut walk).cast(),
+        );
+    }
+    walk.big.sort_by_key(|area| std::cmp::Reverse(area.committed));
+    let threads = NAMED
+        .lock()
+        .map(|named| {
+            named
+                .iter()
+                .map(|(name, id)| ThreadRow {
+                    thread: name.clone(),
+                    id: *id,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Report { threads, big: walk.big }
 }
 
 #[cfg(feature = "heap-owner")]
@@ -217,11 +236,11 @@ pub use recording::OwnerAllocator;
 mod recording {
     use std::alloc::{GlobalAlloc, Layout};
 
-    /// mimalloc with every thread's heap recorded ([`super::record_heap`]), for measuring.
+    /// mimalloc that has every thread record its name ([`super::record_heap`]), for measuring.
     pub struct OwnerAllocator;
 
-    // SAFETY: every call is forwarded to mimalloc unchanged; the recording only reads the
-    // calling thread's own heap and name, on the thread's first allocation.
+    // SAFETY: every call is forwarded to mimalloc unchanged; the recording publishes only the
+    // calling thread's name and id, from its 64th allocation on.
     unsafe impl GlobalAlloc for OwnerAllocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             super::record_heap();
@@ -243,35 +262,38 @@ mod recording {
 
 #[cfg(test)]
 mod tests {
-    use super::{BIG_AREA, report};
+    use super::{record_heap, report};
 
     #[test]
-    fn the_report_lists_the_calling_threads_heap() {
-        // Allocating first makes sure this thread has a heap to find.
-        let block = vec![0u8; 64];
+    fn the_heap_walk_sees_the_big_page() {
+        record_heap();
+        // The test binary's `vec!` goes to the system allocator; a raw mimalloc block is what
+        // the walk can see.
+        let block = unsafe { libmimalloc_sys::mi_malloc(16 * 1024 * 1024) };
+        assert!(!block.is_null());
+        unsafe { std::ptr::write_bytes(block.cast::<u8>(), 7, 16 * 1024 * 1024) };
         let report = report();
-        assert!(!report.threads.is_empty(), "the process has at least one heap");
         assert!(
-            report.threads.iter().any(|row| row.committed > 0),
-            "a heap that just allocated has committed bytes"
+            report
+                .big
+                .iter()
+                .any(|area| area.used >= 1 && area.committed >= 16 * 1024 * 1024),
+            "a 16 MiB block has a page of its own in the heap walk"
         );
-        std::hint::black_box(&block);
+        // SAFETY: `block` came from `mi_malloc` above, with its full size.
+        unsafe { libmimalloc_sys::mi_free(block) };
     }
 
     #[test]
-    fn a_big_page_appears_with_its_size_and_its_owner() {
-        let block = vec![7u8; 16 * 1024 * 1024];
+    fn only_big_pages_are_listed() {
+        record_heap();
+        let small = vec![1u8; 64];
         let report = report();
-        let area = report
-            .big
-            .iter()
-            .find(|area| area.used >= block.len())
-            .expect("a 16 MiB block has a page of its own");
-        assert!(area.reserved >= BIG_AREA);
         assert!(
-            report.threads.iter().any(|row| row.theap > 0),
-            "the page's owner is one of the heaps listed"
+            report.big.iter().all(|area| area.reserved >= super::BIG_AREA),
+            "only pages of the big size are listed"
         );
-        std::hint::black_box(&block);
+        std::hint::black_box(&small);
     }
 }
+

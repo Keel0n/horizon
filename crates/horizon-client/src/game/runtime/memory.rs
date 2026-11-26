@@ -326,7 +326,7 @@ fn unattributed(resident: Option<u64>, named: usize) -> Option<f64> {
 /// mimalloc's heaps and their big pages, for a build with the `heap-owner` feature.
 #[derive(Serialize)]
 struct Heaps {
-    /// One row per thread heap: the thread that made it, and what it holds.
+    /// One row per thread that recorded itself: its name and the OS id its pages carry.
     threads: Vec<ThreadRow>,
     /// Pages of 8 MiB and up: the address a memory map shows, its bytes, and its owner.
     big: Vec<BigPage>,
@@ -335,11 +335,8 @@ struct Heaps {
 #[derive(Serialize)]
 struct ThreadRow {
     thread: String,
-    theap: String,
-    reserved_mb: f64,
-    committed_mb: f64,
-    used_mb: f64,
-    pages: usize,
+    /// The OS thread id, as mimalloc writes it into the pages the thread owns.
+    id: String,
 }
 
 #[derive(Serialize)]
@@ -348,7 +345,8 @@ struct BigPage {
     owner: String,
     reserved_mb: f64,
     committed_mb: f64,
-    used_mb: f64,
+    /// Blocks in use in the page: one for a page that is a single object.
+    used_blocks: usize,
     block_kb: usize,
 }
 
@@ -362,11 +360,7 @@ fn heaps() -> Heaps {
             .iter()
             .map(|row| ThreadRow {
                 thread: row.thread.clone(),
-                theap: format!("{:#x}", row.theap),
-                reserved_mb: mb(row.reserved),
-                committed_mb: mb(row.committed),
-                used_mb: mb(row.used),
-                pages: row.pages,
+                id: format!("{:#x}", row.id),
             })
             .collect(),
         big: report
@@ -377,7 +371,7 @@ fn heaps() -> Heaps {
                 owner: area.owner.clone(),
                 reserved_mb: mb(area.reserved),
                 committed_mb: mb(area.committed),
-                used_mb: mb(area.used),
+                used_blocks: area.used,
                 block_kb: area.block_size / 1024,
             })
             .collect(),
