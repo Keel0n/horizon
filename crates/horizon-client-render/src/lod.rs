@@ -2215,13 +2215,23 @@ impl Lod {
                                             return;
                                         }
                                         if shared.mesh_held.load(Ordering::Relaxed) {
-                                            jobs = shared.mesh_wake.wait(jobs).unwrap();
+                                            jobs = shared
+                                                .mesh_wake
+                                                .wait_timeout(jobs, horizon_threads::RELEASE_POLL)
+                                                .unwrap()
+                                                .0;
+                                            horizon_threads::release_if_asked();
                                             continue;
                                         }
                                         if let Some(job) = jobs.pop() {
                                             break job.job;
                                         }
-                                        jobs = shared.mesh_wake.wait(jobs).unwrap();
+                                        jobs = shared
+                                            .mesh_wake
+                                            .wait_timeout(jobs, horizon_threads::RELEASE_POLL)
+                                            .unwrap()
+                                            .0;
+                                        horizon_threads::release_if_asked();
                                     }
                                 };
                                 if job.canceled.load(Ordering::Acquire) {
@@ -2285,6 +2295,10 @@ impl Lod {
                                 {
                                     return;
                                 }
+                                // The mesher keeps its scratch between tiles, and a tile's
+                                // buffers are large: an ask between two of them is when this
+                                // worker can give the peak's pages back (#19332).
+                                horizon_threads::release_if_asked();
                             }
                         })
                         .expect("far meshing worker"),
@@ -2331,7 +2345,15 @@ impl Lod {
                                                         };
                                                         break key;
                                                     }
-                                                    jobs = shared.wake.wait(jobs).unwrap();
+                                                    jobs = shared
+                                                        .wake
+                                                        .wait_timeout(
+                                                            jobs,
+                                                            horizon_threads::RELEASE_POLL,
+                                                        )
+                                                        .unwrap()
+                                                        .0;
+                                                    horizon_threads::release_if_asked();
                                                 }
                                             };
                                             step_behind(&shared, &mut behind);
@@ -2349,6 +2371,7 @@ impl Lod {
                                             if tx.send(Done::Sample { key, tile }).is_err() {
                                                 return;
                                             }
+                                            horizon_threads::release_if_asked();
                                         }
                                     })
                                     .expect("far sampling worker"),
@@ -2381,6 +2404,7 @@ impl Lod {
                                         .wait_timeout(jobs, std::time::Duration::from_millis(100))
                                         .unwrap()
                                         .0;
+                                    horizon_threads::release_if_asked();
                                 }
                                 if worker.stop.load(Ordering::Relaxed) {
                                     break;
@@ -2439,6 +2463,7 @@ impl Lod {
                             if tx.send(done).is_err() {
                                 break;
                             }
+                            horizon_threads::release_if_asked();
                         }
                         let jobs = worker.jobs.lock();
                         worker.stop.store(true, Ordering::Relaxed);

@@ -400,6 +400,7 @@ impl Game<'_> {
                 self.streaming.shrink_to_fit();
                 self.pending_uploads.shrink_to_fit();
                 horizon_threads::release_everywhere();
+                log::info!("{}", horizon_threads::release_summary());
             }
             if let (Some(lod), Some(player)) = (&mut self.lod, &self.player) {
                 let lod_distance = far_distance.min(horizon_client::lod::MAX_CHUNKS);
@@ -449,6 +450,7 @@ impl Game<'_> {
             self.release_when_settled = false;
             self.streaming.shrink_to_fit();
             horizon_threads::release_everywhere();
+            log::info!("{}", horizon_threads::release_summary());
         }
     }
     /// Run `f` inside a local player block-edit scope so writes record `World::immediate_sections`.

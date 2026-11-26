@@ -230,6 +230,17 @@ struct Allocator {
     /// Committed minus the pages in use: committed memory no page holds, and any huge block.
     #[serde(skip_serializing_if = "Option::is_none")]
     overhead_mb: Option<f64>,
+    /// The arenas' address space and commit: what a render distance cycle leaves behind, in the
+    /// one figure that matches a memory map of the process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arena_reserved_mb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arena_committed_mb: Option<f64>,
+    /// Given back to the OS since the start, cumulative.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    purged_mb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arenas: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -562,6 +573,7 @@ impl Game<'_> {
     pub(super) fn memory_report(&self) -> MemoryReport {
         let (commit, peak_commit) = horizon_threads::allocator_commit();
         let live = horizon_threads::allocator_stats::live_bytes();
+        let arenas = horizon_threads::allocator_stats::arenas();
         let resident = horizon_threads::process_memory::resident_bytes();
         let dedicated = self.options.dedicated.is_some();
         // The single-player server thread's own levels: a second copy of the
@@ -642,6 +654,10 @@ impl Game<'_> {
                 commit_mb: mb(commit),
                 peak_commit_mb: mb(peak_commit),
                 overhead_mb: live.map(|live| mb(commit.saturating_sub(live))),
+                arena_reserved_mb: arenas.map(|a| mb(a.reserved)),
+                arena_committed_mb: arenas.map(|a| mb(a.committed)),
+                purged_mb: arenas.map(|a| mb(a.purged)),
+                arenas: arenas.map(|a| a.count),
             },
             render_distance: self.streaming.radius,
             client_columns: window.as_ref().map(Columns::new),

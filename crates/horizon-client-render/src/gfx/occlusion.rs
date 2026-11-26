@@ -707,7 +707,15 @@ impl Worker {
             .spawn(move || {
                 let mut columns = Columns::new(min_y, sections);
                 let (mut vis, mut queue) = (Vec::new(), VecDeque::new());
-                while let Ok(mut job) = job_rx.recv() {
+                loop {
+                    let mut job = match job_rx.recv_timeout(horizon_threads::RELEASE_POLL) {
+                        Ok(job) => job,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            horizon_threads::release_if_asked();
+                            continue;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     for edit in job.edits.drain(..) {
                         columns.apply(edit);
                     }
@@ -716,6 +724,10 @@ impl Worker {
                     if done_tx.send((job.graph, job.edits)).is_err() {
                         break;
                     }
+                    // Asked to give memory back between jobs: this worker keeps the columns and
+                    // the search's scratch, and holds them for a whole render distance cycle
+                    // otherwise (#19332).
+                    horizon_threads::release_if_asked();
                 }
             })
             .ok()?;

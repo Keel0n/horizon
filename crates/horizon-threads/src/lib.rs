@@ -719,6 +719,117 @@ pub fn release_asked(seen: &mut u64) -> bool {
     std::mem::replace(seen, now) != now
 }
 
+/// A long-lived thread that answers [`release_everywhere`], as [`release_summary`] reports it: which
+/// thread, and the ask it last answered.
+struct Answer {
+    thread: std::thread::ThreadId,
+    name: String,
+    answered: u64,
+}
+
+static ANSWERS: std::sync::Mutex<Vec<Answer>> = std::sync::Mutex::new(Vec::new());
+
+thread_local! {
+    /// The ask this thread last answered, for [`release_if_asked`]: `None` until its first call, as
+    /// an ask nobody saw is not this thread's.
+    static ASK_ANSWERED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+fn record_answer(thread: std::thread::ThreadId, name: &str, ask: u64) {
+    let mut answers = ANSWERS.lock().unwrap_or_else(|e| e.into_inner());
+    match answers.iter_mut().find(|entry| entry.thread == thread) {
+        Some(entry) => entry.answered = ask,
+        None => answers.push(Answer {
+            thread,
+            name: name.to_owned(),
+            answered: ask,
+        }),
+    }
+}
+
+/// For a long-lived thread between jobs: give back this thread's free pages if
+/// [`release_everywhere`] was asked since its last call, and say whether it was. mimalloc collects
+/// only the calling thread's heap, so a thread that never calls this keeps them however long it
+/// idles: call it once per loop, or on a wait's timeout, and its heap follows the settle too.
+///
+/// The first call registers the thread for [`release_summary`] and answers nothing: an ask made
+/// before the thread looked is not its own.
+pub fn release_if_asked() -> bool {
+    let ask = release_seen();
+    let thread = std::thread::current();
+    let (id, name) = (thread.id(), thread.name().unwrap_or("unnamed").to_owned());
+    let asked = ASK_ANSWERED.with(|answered| match answered.get() {
+        Some(seen) if seen == ask => false,
+        Some(_) => {
+            answered.set(Some(ask));
+            true
+        }
+        None => {
+            answered.set(Some(ask));
+            record_answer(id, &name, ask);
+            false
+        }
+    });
+    if asked {
+        record_answer(id, &name, ask);
+        release_free_memory();
+    }
+    asked
+}
+
+/// What a settle can put in the log, one line: the allocator's pages, its address space and commit,
+/// what it has given back, and which threads answered the last [`release_everywhere`] ask. A thread
+/// that never answers is one whose heap keeps the peak's pages, which `mi_collect` cannot reach
+/// from another thread.
+pub fn release_summary() -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let ask = release_seen();
+    // A thread answers within `RELEASE_POLL` of an ask, so at the ask itself most have not yet:
+    // the count for the ask before it is what says whether the wiring reaches them.
+    let (watchers, now, previous, stale) = {
+        let answers = ANSWERS.lock().unwrap_or_else(|e| e.into_inner());
+        let now = answers.iter().filter(|entry| entry.answered == ask).count();
+        let previous = answers
+            .iter()
+            .filter(|entry| entry.answered + 1 >= ask)
+            .count();
+        let mut stale: Vec<&str> = answers
+            .iter()
+            .filter(|entry| entry.answered + 1 < ask)
+            .map(|entry| entry.name.as_str())
+            .collect();
+        stale.sort_unstable();
+        stale.dedup();
+        (answers.len(), now, previous, stale.join(", "))
+    };
+    let (commit, peak) = allocator_commit();
+    let resident = process_memory::resident_bytes();
+    let arenas = allocator_stats::arenas();
+    let allocator = match arenas {
+        Some(arenas) => format!(
+            "resident {:.0} MB, arenas reserved {:.0} MB of {} arenas, committed {:.0} MB, \
+             purged {:.0} MB since start",
+            resident.map_or(0.0, |bytes| bytes as f64 / MB),
+            arenas.reserved as f64 / MB,
+            arenas.count,
+            arenas.committed as f64 / MB,
+            arenas.purged as f64 / MB,
+        ),
+        None => "no allocator statistics".to_owned(),
+    };
+    let stale = if stale.is_empty() {
+        String::new()
+    } else {
+        format!("; silent for two asks: {stale}")
+    };
+    format!(
+        "Horizon: release ask {ask}, answered by {now} of {watchers} watchers now and {previous} \
+         within a poll{stale}; commit {:.0} MB (peak {:.0} MB), {allocator}",
+        commit as f64 / MB,
+        peak as f64 / MB,
+    )
+}
+
 /// Give back to the OS the memory the allocator holds free, after something
 /// large was dropped: mimalloc's free pages, then the system heap's, which
 /// native libraries still use: glibc keeps freed pages in the arena of the
@@ -862,6 +973,30 @@ pub fn keep_stdio_from_children() {
 
 #[cfg(test)]
 mod tests {
+    /// A thread answers an ask once, and only when it looks: the first call registers it and answers
+    /// nothing, and an ask it already answered is not answered again. A thread that never calls it is
+    /// exactly the one whose heap keeps the peak's free pages.
+    #[test]
+    fn a_release_ask_is_answered_once_and_only_by_a_thread_that_looks() {
+        use std::sync::atomic::Ordering;
+        assert!(
+            !super::release_if_asked(),
+            "the first call registers the thread, it does not answer an ask made before it looked"
+        );
+        assert!(
+            !super::release_if_asked(),
+            "no ask since the one it answered: nothing to give back"
+        );
+        super::RELEASE_ASKED.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            super::release_if_asked(),
+            "an ask since it last looked is answered"
+        );
+        assert!(!super::release_if_asked(), "and answered once");
+        let summary = super::release_summary();
+        assert!(summary.contains("watchers"), "{summary}");
+    }
+
     /// Without `HORIZON_WORKER_THREADS`, the count is the machine's.
     #[test]
     fn worker_count_defaults_to_the_machine() {
