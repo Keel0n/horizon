@@ -857,7 +857,7 @@ impl Game<'_> {
         }
         // The world is gone; a screen is next, not another world. (A transfer keeps its pages:
         // the next connection follows at once and would only commit them again.)
-        self.begin_giving_memory_back();
+        self.give_back_memory_after_world_close();
         let saves = std::env::current_dir()?.join("saves");
         let mut title = self
             .new_title(saves.clone())

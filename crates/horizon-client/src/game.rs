@@ -6576,7 +6576,7 @@ impl Game<'_> {
         title.skip_multiplayer_warning = self.settings.file.bool("skipMultiplayerWarning");
         self.show_title(title);
         self.capture(false);
-        self.begin_giving_memory_back();
+        self.give_back_memory_after_world_close();
         Ok(())
     }
     /// Let go of every entity of the level (saved first): the next world
