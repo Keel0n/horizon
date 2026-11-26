@@ -33,6 +33,8 @@ system-allocator = []
 alloc-count = []
 # Counts live heap bytes by startup step and thread (`CensusAllocator`); for measuring only.
 alloc-census = ["alloc-count"]
+# Records which thread made each mimalloc heap (`OwnerAllocator`); for measuring only.
+heap-owner = []
 # Test-only synchronous allocation accounting; never enabled by game builds.
 test-allocation-probe = []
 # Counts allocation calls on the current thread in behavior tests only.
