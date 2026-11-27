@@ -6521,6 +6521,9 @@ impl Game<'_> {
         world_loading::world_data_released();
         horizon_client::light::release_scratch();
         horizon_threads::release_everywhere();
+        // Which threads answered this ask, and what the arenas hold right now: the line the
+        // title's residual is read against (#19332).
+        log::info!("{}", horizon_threads::release_summary());
     }
     fn finish_close_world(&mut self) -> Result<()> {
         self.ambience.clear(&mut self.audio);

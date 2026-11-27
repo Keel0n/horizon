@@ -320,6 +320,9 @@ pub(super) struct MemoryReport {
     /// A build with the `alloc-census` feature: the live heap by the
     /// startup step, span or pool job that allocated it, else its thread.
     heap_by_tag_mb: Option<Vec<(String, f64)>>,
+    /// A build with the `heap-owner` feature: mimalloc's pages added up per owning thread, and
+    /// the big pages on their own.
+    heaps: Option<Heaps>,
     /// The columns, generation, entities, players, chunk send caches, queues, renderer CPU data and far tiles together.
     named_mb: f64,
     /// Resident memory minus `named_mb`: what no census reaches (it can be negative where the parts overlap).
@@ -329,6 +332,77 @@ pub(super) struct MemoryReport {
 /// `resident - named` in megabytes, None without a resident size.
 fn unattributed(resident: Option<u64>, named: usize) -> Option<f64> {
     resident.map(|r| mb_signed(r as i64 - named as i64))
+}
+
+/// mimalloc's pages per owning thread, for a build with the `heap-owner` feature: the answer to
+/// "whose heap holds the memory nobody gives back" (#19332).
+#[derive(Serialize)]
+struct Heaps {
+    /// One row per owning thread, most committed first.
+    owners: Vec<OwnerRow>,
+    /// Pages of 8 MiB and up on their own, largest first: one object each.
+    big: Vec<BigPage>,
+}
+
+#[derive(Serialize)]
+struct OwnerRow {
+    /// The thread whose heap holds the pages, or `abandoned`.
+    thread: String,
+    pages: usize,
+    reserved_mb: f64,
+    /// The sum a memory map's arenas show for this thread.
+    committed_mb: f64,
+    /// Bytes of that committed memory holding live blocks.
+    live_mb: f64,
+    /// Pages with no live block at all: a collect of that thread's heap returns each of them.
+    free_pages: usize,
+    free_mb: f64,
+    /// Committed in pages that do hold live blocks: a collect keeps these.
+    partly_used_mb: f64,
+}
+
+#[derive(Serialize)]
+struct BigPage {
+    at: String,
+    owner: String,
+    reserved_mb: f64,
+    committed_mb: f64,
+    used_blocks: usize,
+    block_kb: usize,
+}
+
+/// The pages as the report lists them: addresses in hex, so a memory map's regions and the
+/// report's pages can be lined up by eye and by script.
+fn heaps() -> Heaps {
+    let report = horizon_threads::heap_owner::report();
+    Heaps {
+        owners: report
+            .owners
+            .iter()
+            .map(|row| OwnerRow {
+                thread: row.thread.clone(),
+                pages: row.pages,
+                reserved_mb: mb(row.reserved),
+                committed_mb: mb(row.committed),
+                live_mb: mb(row.used),
+                free_pages: row.free_pages,
+                free_mb: mb(row.free_committed),
+                partly_used_mb: mb(row.partly_committed),
+            })
+            .collect(),
+        big: report
+            .big
+            .iter()
+            .map(|area| BigPage {
+                at: format!("{:#x}", area.at),
+                owner: area.owner.clone(),
+                reserved_mb: mb(area.reserved),
+                committed_mb: mb(area.committed),
+                used_blocks: area.used,
+                block_kb: area.block_size / 1024,
+            })
+            .collect(),
+    }
 }
 
 /// `horizon-ctl memory`'s report as a capture's rows: `a.b` paths, `key[name]` for named
@@ -679,6 +753,7 @@ impl Game<'_> {
                     .map(|(tag, bytes)| (tag.to_string(), mb(bytes.max(0) as u64)))
                     .collect()
             }),
+            heaps: horizon_threads::HEAP_OWNER.then(heaps),
             named_mb: mb(named),
             unattributed_mb: unattributed(resident, named),
         };

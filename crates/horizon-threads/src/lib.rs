@@ -14,6 +14,8 @@ pub mod file_acl;
 #[cfg(windows)]
 pub mod file_publish;
 pub mod heap_census;
+/// Which thread's heap holds the allocator's memory: measuring only (#19332).
+pub mod heap_owner;
 #[cfg(target_os = "linux")]
 pub mod heap_sample;
 pub mod jobs;
@@ -594,12 +596,22 @@ pub type Allocator = mimalloc::MiMalloc;
 #[cfg(not(feature = "test-allocation-count"))]
 pub const ALLOCATOR: Allocator = Allocator {};
 
-/// The game's global allocator: the census, else counting mimalloc, else [`Allocator`].
-#[cfg(feature = "alloc-census")]
+/// The game's global allocator: the heap-owner recording one, else the census, else counting
+/// mimalloc, else [`Allocator`].
+#[cfg(feature = "heap-owner")]
+pub type GameAllocator = heap_owner::OwnerAllocator;
+#[cfg(all(feature = "alloc-census", not(feature = "heap-owner")))]
 pub type GameAllocator = heap_census::CensusAllocator;
-#[cfg(all(feature = "alloc-count", not(feature = "alloc-census")))]
+#[cfg(all(
+    feature = "alloc-count",
+    not(any(feature = "alloc-census", feature = "heap-owner"))
+))]
 pub type GameAllocator = alloc_count::CountingAllocator;
-#[cfg(not(any(feature = "alloc-count", feature = "alloc-census")))]
+#[cfg(not(any(
+    feature = "alloc-count",
+    feature = "alloc-census",
+    feature = "heap-owner"
+)))]
 pub type GameAllocator = Allocator;
 /// The value of [`GameAllocator`].
 pub const GAME_ALLOCATOR: GameAllocator = GameAllocator {};
@@ -614,6 +626,9 @@ pub use allocation_count::{ALLOCATOR, Allocator};
 pub use heap_census::CensusAllocator;
 /// Whether this build counts the heap by tag (feature `alloc-census`).
 pub const HEAP_CENSUS: bool = cfg!(feature = "alloc-census");
+/// Whether this build records which thread made each mimalloc heap, and can add every page up
+/// per owning thread (feature `heap-owner`).
+pub const HEAP_OWNER: bool = cfg!(feature = "heap-owner");
 /// Tag the calling thread's allocations `name` while the guard lives, in a
 /// build that counts the heap ([`HEAP_CENSUS`]); nothing otherwise.
 #[inline]
